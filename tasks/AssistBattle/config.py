@@ -58,10 +58,19 @@ class AssistBattleConfig(BaseModel):
     )
 
 
+class AssistAccountInfo(AccountInfo):
+    """
+    协战专用的账号信息，在通用 AccountInfo 基础上增加"是否启用"开关
+    只用于一键协战任务，不影响其他使用 AccountInfo 的模块(如 FindJade)
+    """
+
+    enable: bool = Field(default=True, description='取消勾选则该账号不参与协战')
+
+
 class AssistBattle(ConfigBase):
     scheduler: Scheduler = Field(default_factory=Scheduler)
     assist_battle_config: AssistBattleConfig = Field(default_factory=AssistBattleConfig)
-    account_list: list[AccountInfo] = None
+    account_list: list[AssistAccountInfo] = None
 
     @model_validator(mode='before')
     @classmethod
@@ -74,7 +83,7 @@ class AssistBattle(ConfigBase):
             if key == 'account_list' or 'account_list' not in key:
                 continue
             try:
-                account = AccountInfo(**item_value)
+                account = AssistAccountInfo(**item_value)
                 if account.is_valid():
                     account_list.append(account)
                 remove_keys.append(key)
@@ -86,7 +95,7 @@ class AssistBattle(ConfigBase):
 
         if len(account_list) < account_count:
             account_list.extend(
-                AccountInfo() for _ in range(account_count - len(account_list))
+                AssistAccountInfo() for _ in range(account_count - len(account_list))
             )
         return value
 

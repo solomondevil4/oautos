@@ -87,7 +87,19 @@ class ScriptTask(
 
     def run_switch_account(self):
         """切换账号并执行协战任务"""
-        accounts = [account for account in self.conf.account_list if account.is_valid()]
+        # 未勾选(enable=False)的账号会被跳过, 但配置保留
+        accounts = []
+        for account in self.conf.account_list:
+            if not account.is_valid():
+                continue
+            if not account.enable:
+                logger.info(
+                    'AssistBattle account %s-%s is disabled, skip it',
+                    account.character,
+                    account.svr,
+                )
+                continue
+            accounts.append(account)
         results = []
         if not accounts:
             # 没有配置协战账号则不执行协战任务，避免误操作
