@@ -65,7 +65,7 @@ class DailyTriflesAssets:
 	# 选择按照交换搜索 
 	I_DT_GW_SELECT_BY_SWAP = RuleImage(roi_front=(197,196,52,41), roi_back=(153,138,165,106), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_select_by_swap.png")
 	# 搜索确定按钮 
-	I_DT_GW_CONFIRM = RuleImage(roi_front=(665,409,176,58), roi_back=(600,360,320,140), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_confirm.png")
+	I_DT_GW_CONFIRM = RuleImage(roi_front=(1030,12,104,48), roi_back=(1016,0,127,71), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_confirm.png")
 	# 清除搜索内容 
 	I_DT_GW_CLEAR_SEARCH = RuleImage(roi_front=(990,92,32,32), roi_back=(958,73,127,71), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_clear_search.png")
 	# 暂无祈愿消息 

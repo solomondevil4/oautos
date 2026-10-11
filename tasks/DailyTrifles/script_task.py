@@ -285,6 +285,7 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 self.C_DT_GW_INPUT_SEARCH, self.I_DT_GW_CONFIRM, interval=1.5
             )  # 点击搜索框
             self.click(self.C_DT_GW_CLICK_INPUT)  # 点击名称输入框
+            sleep(1.5)  # 等输入框聚焦/键盘弹出, 太短会导致输入法还没接管就发广播, 文字输不进去
             # uiautomator2(2.16.17) 的 current_ime() 只认 Android 11- 的 mCurMethodId 字段,
             # Android 12+(本机 MuMu 为 Android 15)已改名为 mSelectedMethodId, 会误判成
             # "FastInputIME 未启动" 并抛错, 回退的 set_text 又因 Unity 界面无原生控件失败。
@@ -294,7 +295,7 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 fast_ime = 'com.github.uiautomator/.FastInputIME'
                 self.device.adb_shell(['ime', 'enable', fast_ime])
                 self.device.adb_shell(['ime', 'set', fast_ime])
-                sleep(0.5)  # 等输入法就绪, 与 uiautomator2 wait_fastinput_ime 的等待一致
+                sleep(1.0)  # 等输入法就绪, 与 uiautomator2 wait_fastinput_ime 的等待一致
                 self.device.adb_shell(
                     [
                         'am', 'broadcast', '-a', 'ADB_SET_TEXT',
@@ -302,6 +303,7 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                         base64.b64encode(name.encode('utf-8')).decode(),
                     ]
                 )
+                sleep(1.0)  # 等广播文本被输入法提交到输入框
             except Exception as e:
                 # 输入失败只跳过当前名字, 不让整个 DailyTrifles 崩掉
                 logger.warning(f'Input {name} failed: {e}, skip this name')
@@ -330,7 +332,12 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
             self.I_DT_GW_INSUFFICIENT.roi_back = (
                 donate_btn.roi_back
             )  # 设置碎片不足标志back区域和赠与按钮同一行
-            donate_ret = self.process_donate(donate_btn, name)
+            try:
+                donate_ret = self.process_donate(donate_btn, name)
+            except Exception as e:
+                # 捐赠过程中的异常(如看门狗 GameTooManyClickError)不应拖垮整个 DailyTrifles
+                logger.warning(f'Donate {name} raised: {e}, treat as failed')
+                donate_ret = False
             all_done = all_done and donate_ret  # 有一次没成功则all_done永远False
         return all_done
 
