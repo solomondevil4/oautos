@@ -146,8 +146,8 @@
   {
     "itemName": "dt_gw_confirm",
     "imageName": "dt_dt_gw_confirm.png",
-    "roiFront": "1030,12,104,48",
-    "roiBack": "1016,0,127,71",
+    "roiFront": "665,409,176,58",
+    "roiBack": "600,360,320,140",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "搜索确定按钮"

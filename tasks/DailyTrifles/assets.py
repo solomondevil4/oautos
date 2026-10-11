@@ -1,5 +1,6 @@
 from module.atom.image import RuleImage
 from module.atom.click import RuleClick
+from module.atom.scatter import RuleScatter
 from module.atom.long_click import RuleLongClick
 from module.atom.swipe import RuleSwipe
 from module.atom.ocr import RuleOcr
@@ -64,7 +65,7 @@ class DailyTriflesAssets:
 	# 选择按照交换搜索 
 	I_DT_GW_SELECT_BY_SWAP = RuleImage(roi_front=(197,196,52,41), roi_back=(153,138,165,106), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_select_by_swap.png")
 	# 搜索确定按钮 
-	I_DT_GW_CONFIRM = RuleImage(roi_front=(1030,12,104,48), roi_back=(1016,0,127,71), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_confirm.png")
+	I_DT_GW_CONFIRM = RuleImage(roi_front=(665,409,176,58), roi_back=(600,360,320,140), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_confirm.png")
 	# 清除搜索内容 
 	I_DT_GW_CLEAR_SEARCH = RuleImage(roi_front=(990,92,32,32), roi_back=(958,73,127,71), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/dt/dt_dt_gw_clear_search.png")
 	# 暂无祈愿消息 
@@ -130,6 +131,32 @@ class DailyTriflesAssets:
 	# Ocr Rule Assets
 	#  
 	O_LUCK_MSG = RuleOcr(roi=(15,27,68,61), area=(0,8,100,100), mode="Full", method="Default", keyword="吉闻", name="luck_msg")
+
+
+	# Image Rule Assets
+	# 蓝票 
+	I_BLUE_TICKET = RuleImage(roi_front=(679,191,93,70), roi_back=(253,163,544,432), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/stats/stats_blue_ticket.png")
+	# 金蛇皮 
+	I_GOLD_SKIN = RuleImage(roi_front=(274,394,93,70), roi_back=(253,163,544,432), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/stats/stats_gold_skin.png")
+	# 逢魔皮 
+	I_DEMON_SKIN = RuleImage(roi_front=(679,292,93,70), roi_back=(253,163,544,432), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/stats/stats_demon_skin.png")
+	# 现世符咒 
+	I_PRESENT_WORLD_TICKET = RuleImage(roi_front=(274,294,93,70), roi_back=(253,163,544,432), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/stats/stats_present_world_ticket.png")
+	# 御札 
+	I_RETURN_SOUL = RuleImage(roi_front=(477,394,93,68), roi_back=(252,165,543,430), threshold=0.8, method="Template matching", file="./tasks/DailyTrifles/stats/stats_return_soul.png")
+	# 切换到资源页面 
+	I_SWITCH_TO_RESOURCE = RuleImage(roi_front=(115,433,107,43), roi_back=(51,179,191,397), threshold=0.9, method="Template matching", file="./tasks/DailyTrifles/stats/stats_switch_to_resource.png")
+
+
+	# Ocr Rule Assets
+	# 金币数量 
+	O_GOLD_COUNT = RuleOcr(roi=(512,14,95,32), area=(468,0,175,61), mode="Single", method="Default", keyword="", name="gold_count")
+	# 体力数量 
+	O_SUSHI_COUNT = RuleOcr(roi=(743,14,79,31), area=(670,0,175,61), mode="Single", method="Default", keyword="", name="sushi_count")
+	# 勾玉数量 
+	O_JADE_COUNT = RuleOcr(roi=(929,15,89,32), area=(873,0,175,61), mode="Single", method="Default", keyword="", name="jade_count")
+	# 通用数量识别 
+	O_COMMON_COUNT = RuleOcr(roi=(931,148,78,31), area=(931,148,78,31), mode="Single", method="Default", keyword="", name="common_count")
 
 
 	# Image Rule Assets

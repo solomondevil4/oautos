@@ -4,7 +4,7 @@ from tasks.ActivityShikigami.assets import ActivityShikigamiAssets
 from tasks.Component.GeneralInvite.assets import GeneralInviteAssets
 from tasks.Component.SwitchAccount.assets import SwitchAccountAssets
 from tasks.Exploration.assets import ExplorationAssets
-from tasks.GameUi.action import conditional_action, sequence
+from tasks.GameUi.action import conditional_action
 from tasks.GameUi.chess_battle import (
     handle_chess_battle_page,
     handle_chess_result_page,
@@ -31,6 +31,7 @@ from tasks.Restart.assets import RestartAssets
 from tasks.RyouToppa.assets import RyouToppaAssets
 from tasks.AssistBattle.assets import AssistBattleAssets
 from module.logger import logger
+from tasks.WeeklyTrifles.assets import WeeklyTriflesAssets
 
 
 def random_click(
@@ -155,9 +156,10 @@ page_daily.add_enter_failure_hooks(
     ),
     conditional_action(
         condition=lambda task: not task.appear(GameUiAssets.I_CHECK_MAIN),
-        action=lambda task: task.ui_click(
+        action=lambda task: task.ui_click_until_appear_or_timeout(
             click=random_click(ltrb=(False, False, False, True)),
             stop=GlobalGameAssets.I_UI_BACK_YELLOW,
+            timeout=8,
         ),
     ),
 )
@@ -232,6 +234,19 @@ page_guild.connect(
 )
 page_main.connect(
     page_guild, GameUiAssets.I_MAIN_GOTO_GUILD, key="page_main->page_guild"
+)
+
+# 摸鱼行动页面。
+page_touch_fish = Page(WeeklyTriflesAssets.I_CHECK_TOUCH_FISH, category="global")
+page_guild.connect(
+    page_touch_fish,
+    WeeklyTriflesAssets.I_GUILD_GOTO_TF,
+    key="page_guild->page_touch_fish",
+)
+page_touch_fish.connect(
+    page_main,
+    WeeklyTriflesAssets.I_WT_TF_GOTO_MAIN,
+    key="page_touch_fish->page_main",
 )
 
 page_shirin = Page(GameUiAssets.I_CHECK_SHRIN, category="global")
@@ -319,6 +334,15 @@ page_summon.connect(
 )
 page_main.connect(
     page_summon, GameUiAssets.I_MAIN_GOTO_SUMMON, key="page_main->page_summon"
+)
+
+# 纳物库页。
+page_storage = Page(GameUiAssets.I_CHECK_STORAGE, category="global")
+page_storage.connect(
+    page_main, GlobalGameAssets.I_UI_BACK_YELLOW, key="page_storage->page_main"
+)
+page_main.connect(
+    page_storage, GameUiAssets.I_MAIN_GOTO_STORAGE, key="page_main->page_storage"
 )
 
 # 町中主页。
