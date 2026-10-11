@@ -1,7 +1,10 @@
 # This Python file uses the following encoding: utf-8
 # @author runhey
 # github https://github.com/runhey
+import base64
 import copy
+import json
+from pathlib import Path
 from time import sleep
 
 import difflib
@@ -19,6 +22,7 @@ from tasks.DailyTrifles.page import (
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import (
     page_main,
+    page_storage,
     page_summon,
     page_guild,
     page_mall,
@@ -30,6 +34,7 @@ from tasks.DailyTrifles.config import DailyTriflesConfig
 from tasks.DailyTrifles.assets import DailyTriflesAssets
 from tasks.Component.Summon.summon import Summon
 
+from module.base.utils import save_image
 from module.logger import logger
 from module.exception import TaskEnd
 from module.base.timer import Timer
@@ -57,6 +62,9 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
         # 商店签到 or 购买寿司
         if con.store_sign or con.buy_sushi_count > 0:
             self.run_store()
+        # 纳物库统计
+        if con.storage_stats:
+            self.run_storage_stats()
         self.config.save()
         self.plan_next_dt()
         raise TaskEnd('DailyTrifles')
@@ -277,11 +285,28 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 self.C_DT_GW_INPUT_SEARCH, self.I_DT_GW_CONFIRM, interval=1.5
             )  # 点击搜索框
             self.click(self.C_DT_GW_CLICK_INPUT)  # 点击名称输入框
-            # uiautomator2 通过 FastInputIME 传输 UTF-8 文本，并在必要时回退到 set_text
-            logger.info(
-                f'Inputting name using uiautomator2: {name}, waiting start and send'
-            )
-            self.device.u2.send_keys(name, clear=True)
+            # uiautomator2(2.16.17) 的 current_ime() 只认 Android 11- 的 mCurMethodId 字段,
+            # Android 12+(本机 MuMu 为 Android 15)已改名为 mSelectedMethodId, 会误判成
+            # "FastInputIME 未启动" 并抛错, 回退的 set_text 又因 Unity 界面无原生控件失败。
+            # 这里绕过该检测, 直接切换输入法并向 FastInputIME 发送广播输入。
+            logger.info(f'Inputting name by ADB broadcast: {name}')
+            try:
+                fast_ime = 'com.github.uiautomator/.FastInputIME'
+                self.device.adb_shell(['ime', 'enable', fast_ime])
+                self.device.adb_shell(['ime', 'set', fast_ime])
+                sleep(0.5)  # 等输入法就绪, 与 uiautomator2 wait_fastinput_ime 的等待一致
+                self.device.adb_shell(
+                    [
+                        'am', 'broadcast', '-a', 'ADB_SET_TEXT',
+                        '--es', 'text',
+                        base64.b64encode(name.encode('utf-8')).decode(),
+                    ]
+                )
+            except Exception as e:
+                # 输入失败只跳过当前名字, 不让整个 DailyTrifles 崩掉
+                logger.warning(f'Input {name} failed: {e}, skip this name')
+                all_done = False
+                continue
             self.ui_click_until_disappear(
                 self.I_DT_GW_CONFIRM, interval=1.5
             )  # 点击确定
@@ -645,6 +670,79 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
         ):
             return False
         return True
+
+    def read_title_value(self, ocr_rule, image) -> str:
+        """读标题栏资源数值，并剥离前导/尾随噪声（如空格）。
+
+        只保留「数字(+可选小数)(+可选万/亿)」；一个数字都没有时返回空串。
+        """
+        result = ocr_rule.ocr(image, log=False)
+        matched = re.search(r'\d+(?:\.\d+)?[万亿]?', str(result))
+        return matched.group(0) if matched else ''
+
+    def run_storage_stats(self) -> dict:
+        """纳物库统计
+
+        进入纳物库后截图存档到 ./log/storage_stats/{实例名}/{日期}/，
+        标题栏金币/体力/勾玉直接读固定 ROI；其余资源逐个点击图标，
+        再读右侧面板固定位置的「持有：N」，结果与截图同名前缀落盘为 json。
+        """
+        logger.hr('storage stats', 2)
+        self.goto_page(page_storage)
+        self.ui_click_until_disappear(self.I_SWITCH_TO_RESOURCE, interval=0.5)
+        self.screenshot()
+
+        # 1. 截图存档：./log/storage_stats/{实例名}/{日期}/{时间戳}.png
+        instance = re.sub(r'[^\w.-]', '_', self.config.config_name)
+        now = datetime.now()
+        folder = Path('./log/storage_stats') / instance / now.strftime('%Y-%m-%d')
+        folder.mkdir(parents=True, exist_ok=True)
+        timestamp = now.strftime('%Y-%m-%d_%H-%M-%S')
+        png_file = folder / f'{timestamp}.png'
+        save_image(self.device.image, str(png_file))
+        logger.info(f'纳物库截图已保存至 {png_file}')
+
+        # 2. 标题栏资源：金币 / 体力 / 勾玉（读固定 ROI + 剥离噪声）
+        stats = {}
+        for name, ocr_rule in (
+            ('金币', DailyTriflesAssets.O_GOLD_COUNT),
+            ('体力', DailyTriflesAssets.O_SUSHI_COUNT),
+            ('勾玉', DailyTriflesAssets.O_JADE_COUNT),
+        ):
+            stats[name] = self.read_title_value(ocr_rule, self.device.image)
+
+        # 3. 仓库资源：模板定位图标 -> 点击 -> 读右侧「持有：N」固定 ROI
+        items = (
+            ('蓝票', DailyTriflesAssets.I_BLUE_TICKET),
+            ('金蛇皮', DailyTriflesAssets.I_GOLD_SKIN),
+            ('逢魔皮', DailyTriflesAssets.I_DEMON_SKIN),
+            ('现世符咒', DailyTriflesAssets.I_PRESENT_WORLD_TICKET),
+            ('御札', DailyTriflesAssets.I_RETURN_SOUL),
+        )
+        for name, icon in items:
+            self.screenshot()
+            if not self.appear(icon):
+                # 页面上确实没有这个资源（例如现世符咒已用完）→ 记 0，别漏键
+                logger.info(f'纳物库中未找到资源 {name}，记为 0')
+                stats[name] = 0
+                continue
+            self.click(icon, interval=1)
+            sleep(0.8)  # 等右侧面板刷新
+            self.screenshot()
+            stats[name] = DailyTriflesAssets.O_COMMON_COUNT.ocr(
+                self.device.image, log=False
+            )
+
+        logger.info(f'纳物库统计结果: {stats}')
+
+        # 4. 统计结果与截图同名前缀落盘
+        json_file = png_file.with_suffix('.json')
+        with open(json_file, 'w', encoding='utf-8') as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+        logger.info(f'纳物库统计结果已保存至 {json_file}')
+
+        self.goto_page(page_main)
+        return stats
 
 
 if __name__ == '__main__':
