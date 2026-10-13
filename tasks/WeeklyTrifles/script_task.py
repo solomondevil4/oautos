@@ -88,6 +88,15 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
         # 保存次数，后续做了也会邮件返还福运御守
         self.goto_page(page_touch_fish)
         self.screenshot()
+        # 「上周存储」弹窗会挡住右下角 I_WT_SAVE_ALL，导致整个存储被跳过，先关掉它
+        popup_timer = Timer(5).start()
+        while self.appear(self.I_WT_LAST_SAVE):
+            if popup_timer.reached():
+                logger.warning('Touch fish last save popup close timeout')
+                break
+            self.click(random_click(ltrb=(True, False, False, False)), interval=1.5)
+            sleep(0.5)
+            self.screenshot()
         if self.appear(self.I_WT_SAVE_ALL):
             cu_tickts, _, _ = self.O_WT_LUCKY_TICKETS.ocr(self.device.image)
             logger.info(f"当前的福运御守数量：{cu_tickts}")
