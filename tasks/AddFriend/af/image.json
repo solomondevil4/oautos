@@ -1,0 +1,47 @@
+[
+  {
+    "itemName": "af_goto_add",
+    "imageName": "af_goto_add.png",
+    "roiFront": "1204,299,36,63",
+    "roiBack": "1190,270,90,120",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "添加页签(未选中态), 点击进入添加好友页"
+  },
+  {
+    "itemName": "af_check_search",
+    "imageName": "af_check_search.png",
+    "roiFront": "996,103,138,64",
+    "roiBack": "996,103,138,64",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "添加好友页面标志(搜索按钮)"
+  },
+  {
+    "itemName": "af_user_add",
+    "imageName": "af_user_add.png",
+    "roiFront": "437,249,66,67",
+    "roiBack": "400,170,200,540",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "推荐阴阳师列表加号按钮"
+  },
+  {
+    "itemName": "af_apply",
+    "imageName": "af_apply.png",
+    "roiFront": "695,417,126,55",
+    "roiBack": "695,417,126,55",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友申请弹窗的申请按钮"
+  },
+  {
+    "itemName": "af_refresh",
+    "imageName": "af_refresh.png",
+    "roiFront": "478,182,44,44",
+    "roiBack": "478,182,44,44",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "换一换按钮"
+  }
+]

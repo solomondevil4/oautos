@@ -22,6 +22,7 @@ class ConfigManual:
         > TrueOrochi > RichMan
         > MetaDemon > FrogBoss > FrogChallenge > FloatParade > Quiz > KittyShop > DyeTrials > MemoryScrolls > GuguArtStudio > IbukiArena > LBS
         > AssistBattle > ActivityExploration > LevelRush
+        > AddFriend
         """
 
     DEVICE_OVER_HTTP = False

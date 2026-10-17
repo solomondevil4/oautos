@@ -301,6 +301,8 @@
   "save_touch_fish": "惠比寿的摸鱼行动",
   "save_touch_fish_help": "默认使用全部存储按钮，主要目的是为了配合真蛇每周打一次即可获得俩次奖励(并不会节省体力)",
   "LevelRush": "一键起号",
+  "AddFriend": "添加好友",
+  "add_friend_count_help": "添加好友的次数，每成功点击一次推荐列表的加号按钮计一次，达到该次数后任务自动停止",
   "level_7_mark": "7级标记(达到40级或跳过会自动恢复默认False,详细内容请看README文件)",
   "assist_up_mark": "sp姑获鸟上阵标记(达到40级或跳过后会自动恢复默认False)",
   "skip_to_30_mark": "跳过剧情标记(达到40级或跳过会自动恢复默认False)",
