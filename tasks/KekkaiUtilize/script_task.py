@@ -55,7 +55,39 @@ class ScriptTask(GameUi, ReplaceShikigami, KekkaiUtilizeAssets):
         '斗鱼': 151,
     }
 
+    def _defer_in_sleep_window(self) -> None:
+        """蹭卡独立作息: 命中休眠时段则推迟到时段结束再运行.
+
+        只作用于结界蹭卡, 与全局 anti_ban 的开关无关。
+        支持跨午夜, 例如 23:00 到次日 06:00。
+        """
+        con = self.config.kekkai_utilize.utilize_config
+        if not con.sleep_enable:
+            return
+        start, end = con.sleep_start, con.sleep_end
+        if start == end:
+            return
+        now = datetime.now()
+        now_time = now.time()
+        if start < end:
+            in_window = start <= now_time < end
+        else:
+            in_window = now_time >= start or now_time < end
+        if not in_window:
+            return
+        wake = now.replace(
+            hour=end.hour, minute=end.minute, second=end.second, microsecond=0
+        )
+        if wake <= now:
+            wake += timedelta(days=1)
+        logger.info(
+            f'KekkaiUtilize 处于休眠时段, 推迟到 {wake.strftime("%Y-%m-%d %H:%M:%S")}'
+        )
+        self.set_next_run(task='KekkaiUtilize', target=wake, finish=True)
+        raise TaskEnd('KekkaiUtilize')
+
     def run(self):
+        self._defer_in_sleep_window()
         con = self.config.kekkai_utilize.utilize_config
         self.utilize_add_count = 0
         self.utilize_failed_count = 0

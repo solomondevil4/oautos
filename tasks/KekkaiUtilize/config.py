@@ -6,7 +6,7 @@ from enum import Enum
 from datetime import datetime, time, timedelta
 
 from tasks.Component.config_scheduler import Scheduler
-from tasks.Component.config_base import ConfigBase, TimeDelta
+from tasks.Component.config_base import ConfigBase, Time, TimeDelta
 from tasks.Utils.config_enum import ShikigamiClass
 
 class SelectFriendList(str, Enum):
@@ -33,6 +33,11 @@ class UtilizeConfig(BaseModel):
     shikigami_class: ShikigamiClass = Field(default=ShikigamiClass.N, description='shikigami_class_help')
     shikigami_order: int = Field(default=4, description='shikigami_order_help')
     min_run_interval: TimeDelta = Field(default=timedelta(0), description='min_run_interval_help')
+    sleep_enable: bool = Field(default=False, description='kekkai_utilize_sleep_enable_help')
+    sleep_start: Time = Field(default=Time(hour=1, minute=0, second=0),
+                              description='kekkai_utilize_sleep_start_help')
+    sleep_end: Time = Field(default=Time(hour=7, minute=0, second=0),
+                            description='kekkai_utilize_sleep_end_help')
     harvest_guild_max_times: int = Field(default=2, description='harvest_guild_max_times_help')
     utilize_harvest: bool = Field(default=True, description='utilize_harvest_help')
     utilize_enable: bool = Field(default=True, description='utilize_enable_help')
