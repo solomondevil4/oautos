@@ -146,6 +146,8 @@ class Script:
                 lines = handle_sensitive_logs(lines)
             with open(f"{folder}/log.txt", "w", encoding="utf-8") as f:
                 f.writelines(lines)
+            return folder
+        return None
 
     def init_server(self, port: int) -> int:
         """
@@ -592,9 +594,11 @@ class Script:
                 )
                 logger.critical("Request human takeover")
                 # 添加失败三次的推送通知
+                error_folder = self.save_error_log()
                 self.config.notifier.push(
                     title=f"{I18n.trans_zh_cn(task)}{task}",
                     content=f"<{self.config_name}> 任务连续失败三次，请上线查看",
+                    images=[error_folder] if error_folder else None,
                 )
                 # 关闭模拟器
                 if self.config.script.error.error_repeated:
@@ -634,7 +638,7 @@ class Script:
 
         if isinstance(e, (GameStuckError, GameTooManyClickError)):
             logger.error(e)
-            self.save_error_log()
+            error_folder = self.save_error_log()
             self.exception_handler(e=e, command=command)
             logger.warning(
                 f"Game stuck, {self.device.package} will be restarted in 10 seconds"
@@ -643,6 +647,7 @@ class Script:
             self.config.notifier.push(
                 title=f"{I18n.trans_zh_cn(command)}{command}",
                 content=f"<{self.config_name}> GameStuckError or GameTooManyClickError",
+                images=[error_folder] if error_folder else None,
             )
             self.config.task_call("Restart")
             self.device.sleep(10)
@@ -673,11 +678,12 @@ class Script:
                 )
                 return False
             logger.critical("Game page unknown")
-            self.save_error_log()
+            error_folder = self.save_error_log()
             self.exception_handler(e=e, command=command)
             self.config.notifier.push(
                 title=f"{I18n.trans_zh_cn(command)}{command}",
                 content=f"<{self.config_name}> GamePageUnknownError",
+                images=[error_folder] if error_folder else None,
             )
             self.config.task_call("Restart")
             self.device.sleep(10)
@@ -685,6 +691,7 @@ class Script:
 
         if isinstance(e, ScriptError):
             logger.critical(e)
+            error_folder = self.save_error_log()
             self.exception_handler(e=e, command=command)
             logger.critical(
                 "This is likely to be a mistake of developers, but sometimes just random issues"
@@ -692,27 +699,30 @@ class Script:
             self.config.notifier.push(
                 title=f"{I18n.trans_zh_cn(command)}{command}",
                 content=f"<{self.config_name}> ScriptError",
+                images=[error_folder] if error_folder else None,
             )
             exit(1)
 
         if isinstance(e, RequestHumanTakeover):
             logger.critical(e)
             self.exception_handler(e=e, command=command)
-            self.save_error_log()
+            error_folder = self.save_error_log()
             logger.critical("Request human takeover")
             self.config.notifier.push(
                 title=f"{I18n.trans_zh_cn(command)}{command}",
                 content=f"<{self.config_name}> RequestHumanTakeover",
+                images=[error_folder] if error_folder else None,
             )
             exit(1)
 
         # generic
         logger.exception(e)
         self.exception_handler(e=e, command=command)
-        self.save_error_log()
+        error_folder = self.save_error_log()
         self.config.notifier.push(
             title=f"{I18n.trans_zh_cn(command)}{command}",
             content=f"<{self.config_name}> Exception occured",
+            images=[error_folder] if error_folder else None,
         )
         exit(1)
         return False

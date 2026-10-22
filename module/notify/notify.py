@@ -50,9 +50,27 @@ class Notifier:
     def push(self, **kwargs) -> bool:
         if not self.enable:
             return False
+        # 图片是本模块自用的参数, 不能透传给各 provider 的 notify
+        images = kwargs.pop("images", None)
         # 更新配置
         kwargs["title"] = f"{self.config_name} {kwargs['title']}"
         self.config.update(kwargs)
+
+        # smtp 支持传入自定义 EmailMessage, 把报错截图塞进邮件正文与附件
+        if images and str(getattr(self, "provider_name", "")).lower() == "smtp":
+            try:
+                from module.notify.mail_image import build_email
+
+                body = self.config.get("content") or self.config.get("message") or ""
+                self.config["msg"] = build_email(
+                    title=self.config.get("title", ""),
+                    content=body,
+                    images=images,
+                    sender=self.config.get("user"),
+                    to=self.config.get("To") or self.config.get("user"),
+                )
+            except Exception as e:
+                logger.warning(f"Build email with images failed: {e}")
         # pre check
         for key in self.required:
             if key not in self.config:
