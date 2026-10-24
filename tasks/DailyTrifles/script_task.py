@@ -481,6 +481,16 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 logger.warning('There is no any luck msg')
                 break
 
+        # 主界面可能被协战横幅遮挡导致识别失败，先清浮层再兜底绕行
+        self.ui_click_until_appear_or_timeout(
+            self.I_UI_BACK_RED, stop=self.I_MAIN_GOTO_GUILD, interval=1, timeout=8
+        )
+
+        if self.wait_until_appear_then_click(self.I_MAIN_GOTO_GUILD, wait_time=3):
+            self.ui_click_until_appear_or_timeout(
+                self.I_UI_BACK_YELLOW, stop=self.I_MAIN_GOTO_GUILD, interval=1, timeout=8
+            )
+
         self.goto_page(page_main)
         self.config.daily_trifles.done_record.luck_msg_dt = datetime.now()
 
