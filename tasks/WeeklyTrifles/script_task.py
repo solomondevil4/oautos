@@ -1,6 +1,7 @@
 # This Python file uses the following encoding: utf-8
 # @author runhey
 # github https://github.com/runhey
+import random
 import time
 from time import sleep
 
@@ -85,6 +86,21 @@ class ScriptTask(GameUi, WeeklyTriflesAssets):
                 continue
             if self.appear(self.I_WT_FOLD_WINDOW):
                 break
+        # 摸鱼入口可能在任务列表下方，滚动查找后点击，并确认进入
+        for _ in range(5):
+            self.screenshot()
+            if self.appear_then_click(self.I_GUILD_GOTO_TF, interval=1):
+                # 点击后确认是否真的进入摸鱼页，没进则继续尝试
+                if self.wait_until_appear(self.I_CHECK_TOUCH_FISH, wait_time=3):
+                    break
+                continue
+            # 起点随机(参考结界蹭卡/突破), 幅度与时长固定
+            safe_pos_x = random.randint(80, 160)
+            safe_pos_y = random.randint(420, 470)
+            p1 = (safe_pos_x, safe_pos_y)
+            p2 = (safe_pos_x, safe_pos_y - 250)
+            self.device.swipe_adb(p1, p2, duration=0.8)
+            sleep(1)
         # 保存次数，后续做了也会邮件返还福运御守
         self.goto_page(page_touch_fish)
         self.screenshot()
