@@ -1,0 +1,65 @@
+[
+  {
+    "itemName": "consign_ticket",
+    "imageName": "ui_consign_ticket.png",
+    "roiFront": "957,307,29,31",
+    "roiBack": "940,300,60,180",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "寄售券图标（碎片行价格前缀，详情页有寄售时才出现）"
+  },
+  {
+    "itemName": "consign_no_ticket",
+    "imageName": "ui_no_ticket.png",
+    "roiFront": "478,305,322,32",
+    "roiBack": "400,280,480,80",
+    "method": "Template matching",
+    "threshold": 0.85,
+    "description": "寄售券不足提示"
+  },
+  {
+    "itemName": "consign_buy_selected",
+    "imageName": "ui_buy_selected.png",
+    "roiFront": "1185,102,47,66",
+    "roiBack": "1170,90,75,90",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "购买标签选中态（详情页被遮挡约0.65，列表页1.0）"
+  },
+  {
+    "itemName": "consign_buy_success",
+    "imageName": "ui_buy_success.png",
+    "roiFront": "473,139,336,37",
+    "roiBack": "430,110,430,100",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "购买成功弹窗标题"
+  },
+  {
+    "itemName": "consign_tab_shop",
+    "imageName": "ui_tab_shop.png",
+    "roiFront": "688,94,65,34",
+    "roiBack": "670,84,105,55",
+    "method": "Template matching",
+    "threshold": 0.85,
+    "description": "顶部分类标签「饰品」：购买页/寄售页都有，兑换页没有。用于判断寄售屋顶部标签栏是否已渲染（=已离开兑换页），不能单独区分购买页与寄售页"
+  },
+  {
+    "itemName": "consign_tab_shikigami",
+    "imageName": "ui_tab_shikigami.png",
+    "roiFront": "424,91,94,37",
+    "roiBack": "406,81,135,58",
+    "method": "Template matching",
+    "threshold": 0.85,
+    "description": "顶部子标签「式神碎片」选中态（白字），中心点 (471,109) 可作点击坐标"
+  },
+  {
+    "itemName": "consign_list_ticket",
+    "imageName": "ui_list_consign_ticket.png",
+    "roiFront": "186,517,32,38",
+    "roiBack": "90,505,1090,65",
+    "method": "Template matching",
+    "threshold": 0.85,
+    "description": "碎片列表每张卡片价格前缀的寄售券图标。实测 购买-碎片页 1.00 / 寄售页 0.39 / 兑换页 0.38，是「在购买页碎片列表」的强判据；但该页无任何在售碎片时不出现"
+  }
+]

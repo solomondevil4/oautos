@@ -1,0 +1,11 @@
+[
+  {
+    "itemName": "consign_shikigami_list",
+    "roiFront": "100,180,1060,140",
+    "roiBack": "100,180,1060,140",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "寄售屋式神碎片列表区域（竖排式神名，用 detect_and_ocr 读取）"
+  }
+]
