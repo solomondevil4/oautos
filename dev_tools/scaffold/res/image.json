@@ -1,0 +1,38 @@
+[
+  {
+    "itemName": "entry",
+    "imageName": "res_entry.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "玩法入口按钮"
+  },
+  {
+    "itemName": "check",
+    "imageName": "res_check.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "已在玩法界面的判据"
+  },
+  {
+    "itemName": "claim",
+    "imageName": "res_claim.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "领取按钮"
+  },
+  {
+    "itemName": "finished",
+    "imageName": "res_finished.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "已无内容可做的判据"
+  }
+]
