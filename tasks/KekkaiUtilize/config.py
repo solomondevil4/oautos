@@ -1,0 +1,58 @@
+# This Python file uses the following encoding: utf-8
+# @author runhey
+# github https://github.com/runhey
+from pydantic import BaseModel, Field
+from enum import Enum
+from datetime import datetime, time, timedelta
+
+from tasks.Component.config_scheduler import Scheduler
+from tasks.Component.config_base import ConfigBase, Time, TimeDelta
+from tasks.Utils.config_enum import ShikigamiClass
+
+class SelectFriendList(str, Enum):
+    SAME_SERVER = 'same_server'
+    DIFFERENT_SERVER = 'different_server'
+
+class UtilizeRule(str, Enum):
+    DEFAULT = 'default'  # 默认就好
+    TAIKO = 'kaiko'  # 太鼓优先
+    FISH = 'fish'  # 斗鱼优先
+    # AUTO = 'auto'  # 自动 兼容代码罢了
+
+
+
+class UtilizeScheduler(Scheduler):
+    priority: int = Field(default=2, description='priority_help')
+    success_interval: TimeDelta = Field(default=TimeDelta(hours=6), description='success_interval_help')
+    failure_interval: TimeDelta = Field(default=TimeDelta(hours=6), description='failure_interval_help')
+
+class UtilizeConfig(BaseModel):
+    utilize_rule: UtilizeRule = Field(default=UtilizeRule.DEFAULT, description='utilize_rule_help')
+    select_friend_list: SelectFriendList = Field(default=SelectFriendList.SAME_SERVER, description='select_friend_list_help')
+    auto_fill: bool = Field(default=False, description='auto_fill_help')
+    shikigami_class: ShikigamiClass = Field(default=ShikigamiClass.N, description='shikigami_class_help')
+    shikigami_order: int = Field(default=4, description='shikigami_order_help')
+    min_run_interval: TimeDelta = Field(default=timedelta(0), description='min_run_interval_help')
+    sleep_enable: bool = Field(default=False, description='kekkai_utilize_sleep_enable_help')
+    sleep_start: Time = Field(default=Time(hour=1, minute=0, second=0),
+                              description='kekkai_utilize_sleep_start_help')
+    sleep_end: Time = Field(default=Time(hour=7, minute=0, second=0),
+                            description='kekkai_utilize_sleep_end_help')
+    harvest_guild_max_times: int = Field(default=2, description='harvest_guild_max_times_help')
+    utilize_harvest: bool = Field(default=True, description='utilize_harvest_help')
+    utilize_enable: bool = Field(default=True, description='utilize_enable_help')
+    lazy_mode: bool = Field(default=False, description='lazy_mode_help')
+    lazy_mode_weight: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        description='lazy_mode_weight_help',
+    )
+    box_ap_enable: bool = Field(default=True)
+    box_exp_enable: bool = Field(default=True)
+    box_exp_waste: bool = Field(default=True, description='box_exp_waste_help')
+
+
+class KekkaiUtilize(ConfigBase):
+    scheduler: UtilizeScheduler = Field(default_factory=UtilizeScheduler)
+    utilize_config: UtilizeConfig = Field(default_factory=UtilizeConfig)
