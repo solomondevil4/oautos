@@ -1,0 +1,99 @@
+<section class="panel center-panel" id="centerPanel">
+  <h2>ROI 画布</h2>
+  <div id="stageWrap" class="stage-wrap">
+    <div class="stage-canvas-holder">
+      <div id="imageStage" class="image-stage">
+        <img id="mainImage" alt="标注图片" />
+        <div id="noImagePlaceholder" class="no-image">空</div>
+        <svg id="polygonOverlay" class="polygon-overlay hidden" aria-label="多边形点击区域">
+          <polygon id="polygonPath" class="polygon-path"></polygon>
+          <g id="polygonVertices"></g>
+        </svg>
+        <div id="roiBack" class="roi roi-back">
+          <span class="tag">Back</span>
+          <span class="resize-handle resize-handle-nw" data-resize-dir="nw"></span>
+          <span class="resize-handle resize-handle-ne" data-resize-dir="ne"></span>
+          <span class="resize-handle resize-handle-sw" data-resize-dir="sw"></span>
+          <span class="resize-handle resize-handle-se" data-resize-dir="se"></span>
+        </div>
+        <div id="roiFront" class="roi roi-front">
+          <span class="tag">Front</span>
+          <span class="resize-handle resize-handle-nw" data-resize-dir="nw"></span>
+          <span class="resize-handle resize-handle-ne" data-resize-dir="ne"></span>
+          <span class="resize-handle resize-handle-sw" data-resize-dir="sw"></span>
+          <span class="resize-handle resize-handle-se" data-resize-dir="se"></span>
+        </div>
+        <div id="testRoiBack" class="roi roi-test-back hidden"><span class="tag">TestBack</span></div>
+        <div id="testRoiFront" class="roi roi-test-front hidden"><span class="tag">TestFront</span></div>
+      </div>
+    </div>
+  </div>
+  <div id="polygonToolbar" class="polygon-toolbar hidden">
+    <button id="polygonPenBtn" type="button">钢笔多边形</button>
+    <button id="polygonFinishBtn" type="button">完成绘制</button>
+    <button id="polygonClearBtn" type="button">清除多边形</button>
+    <button id="polygonContinueBtn" type="button">节点绘制</button>
+    <button id="polygonSelectBtn" type="button">选择节点</button>
+    <button id="polygonUndoBtn" type="button">撤销节点</button>
+    <span id="polygonHint">点击画布依次落点，至少三个顶点后完成。</span>
+  </div>
+  <div class="roi-values">
+    <div class="roi-value-row">
+      <div class="roi-value-head">
+        <span class="roi-value-name">roiFront</span>
+        <span class="roi-value-actions">
+          <button id="copyRoiFrontBtn" class="roi-act-btn roi-act-copy" type="button" data-roi="front" data-action="copy"
+                  title="复制 roiFront 的数值 x,y,w,h 到剪贴板" aria-label="复制 roiFront 的数值到剪贴板">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect>
+              <path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"></path>
+            </svg><span class="roi-act-text">复制</span>
+          </button>
+          <button id="cropRoiFrontBtn" class="roi-act-btn roi-act-crop" type="button" data-roi="front" data-action="crop"
+                  title="按 roiFront 坐标裁剪图片并复制到剪贴板" aria-label="裁剪 roiFront 区域并复制图片">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="4" cy="12" r="1.8"></circle>
+              <circle cx="4" cy="4" r="1.8"></circle>
+              <path d="M5.5 10.7L14 2"></path>
+              <path d="M5.5 5.3L14 14"></path>
+            </svg><span class="roi-act-text">裁剪</span>
+          </button>
+        </span>
+      </div>
+      <input id="roiFrontValue" type="text">
+    </div>
+    <div class="roi-value-row">
+      <div class="roi-value-head">
+        <span class="roi-value-name">roiBack</span>
+        <span class="roi-value-actions">
+          <button id="copyRoiBackBtn" class="roi-act-btn roi-act-copy" type="button" data-roi="back" data-action="copy"
+                  title="复制 roiBack 的数值 x,y,w,h 到剪贴板" aria-label="复制 roiBack 的数值到剪贴板">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect>
+              <path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2"></path>
+            </svg><span class="roi-act-text">复制</span>
+          </button>
+          <button id="cropRoiBackBtn" class="roi-act-btn roi-act-crop" type="button" data-roi="back" data-action="crop"
+                  title="按 roiBack 坐标裁剪图片并复制到剪贴板" aria-label="裁剪 roiBack 区域并复制图片">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="4" cy="12" r="1.8"></circle>
+              <circle cx="4" cy="4" r="1.8"></circle>
+              <path d="M5.5 10.7L14 2"></path>
+              <path d="M5.5 5.3L14 14"></path>
+            </svg><span class="roi-act-text">裁剪</span>
+          </button>
+        </span>
+      </div>
+      <input id="roiBackValue" type="text">
+    </div>
+  </div>
+
+  <section class="panel output-panel center-output-panel" id="centerOutputPanel">
+    <div class="output-header">
+      <h3>输出</h3>
+      <button id="clearOutputBtn" type="button">清空输出</button>
+    </div>
+    <pre id="outputLog" class="output-log"></pre>
+  </section>
+  <div id="roiToast" class="roi-toast" role="status" aria-live="polite"></div>
+</section>
