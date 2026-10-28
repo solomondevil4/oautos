@@ -1,3 +1,4 @@
+import numpy as np
 from datetime import date, datetime, time, timedelta
 from time import sleep
 
@@ -16,7 +17,7 @@ from tasks.WantedQuests.assets import WantedQuestsAssets
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationType
 from tasks.WantedQuests.script_task import ScriptTask as WantedQuestsScriptTask
 from tasks.AssistBattle.assets import AssistBattleAssets
-from tasks.AssistBattle.config import AssistBattleConfig
+from tasks.AssistBattle.config import AssistBattle, weekday_matches
 from tasks.RichMan.mall.consignment import Consignment
 
 
@@ -29,10 +30,11 @@ class ScriptTask(
     AssistBattleAssets,
 ):
 
-    conf: AssistBattleConfig
+    conf: AssistBattle
     FIND_JADE_NONE = "无勾"
     FIND_JADE_NORMAL = "普勾"
     FIND_JADE_SPECIAL = "现勾"
+    FIND_JADE_UNKNOWN = "未知"
     EVOZONE_TOTAL = 15
     REALMRAID_TOTAL = 3
     # 日常类功能的时间窗口, 开关关闭时不限
@@ -51,7 +53,7 @@ class ScriptTask(
 
     def in_daily_window(self) -> bool:
         """日常类功能(邮件/寄售屋/庭院/商店签到)只在晚上执行, 白天那一轮只跑勾协"""
-        if not self.conf.assist_battle_config.daily_time_window_enable:
+        if not self.conf.optimize_config.daily_time_window_enable:
             return True
         return self.DAILY_START <= datetime.now().time() < self.DAILY_END
 
@@ -69,7 +71,7 @@ class ScriptTask(
 
     def is_assist_count_normal(self, result) -> bool:
         """协战次数是否正常: 觉醒打满 15 次、结界突破打满 3 次"""
-        cfg = self.conf.assist_battle_config
+        cfg = self.conf.battle_config
         if cfg.evozone_enable and result['evozone_final'] < self.EVOZONE_TOTAL:
             return False
         if cfg.realmraid_enable and result['realmraid_final'] < self.REALMRAID_TOTAL:
@@ -79,11 +81,53 @@ class ScriptTask(
     def format_assist_count(self, result) -> str:
         """拼接今日累计的协战次数"""
         message = ''
-        if self.conf.assist_battle_config.evozone_enable:
+        if self.conf.battle_config.evozone_enable:
             message += f"-觉醒{result['evozone_final']}次"
-        if self.conf.assist_battle_config.realmraid_enable:
+        if self.conf.battle_config.realmraid_enable:
             message += f"-个突{result['realmraid_final']}次"
         return message
+
+    def format_executed_suffix(self, result) -> str:
+        """本次执行明细的后缀: 协战次数 → 勾协 → 寄售券余额, 每一项都由各自的开关控制"""
+        message = ''
+        if self.conf.push_config.executed_count_enable:
+            if self.conf.battle_config.evozone_enable:
+                message += f"-觉醒{result['evozone_done']}次"
+            if self.conf.battle_config.realmraid_enable:
+                message += f"-个突{result['realmraid_done']}次"
+        if self.conf.daily_config.find_jade_enable:
+            message += f"-{result['jade_flag']}"
+        # 寄售券余额跟在勾协后面; 当天没买或没读到券数就不显示这一项
+        ticket = result.get('consignment_ticket')
+        if self.conf.push_config.consignment_ticket_enable and ticket is not None:
+            message += f"-寄售券{ticket}"
+        return message
+
+    def format_executed_results(self, executed):
+        """拼接"本次执行"的逐账号明细, 没内容可显示时返回空列表
+
+        协战次数、勾协、寄售券余额共用一个判定: 三者任意一个启用并真的产出了内容,
+        这一段才有推送的价值, 否则只剩账号名, 不推送。
+        """
+        if not executed:
+            return []
+        lines = []
+        has_content = False
+        for result in executed:
+            # 开启"仅存在勾协推送"时, 没有勾协的账号整行都不列
+            if (
+                self.conf.push_config.find_jade_push_clear_enable
+                and result['jade_flag'] == self.FIND_JADE_NONE
+            ):
+                continue
+            suffix = self.format_executed_suffix(result)
+            if suffix:
+                has_content = True
+            # 账号取前4位，服务器取后4位，角色名取后2位；开了完整显示就原样输出
+            lines.append(self.format_account_name(result, '**') + suffix)
+        if not has_content:
+            return []
+        return lines
 
     def run_push_result(self, results):
         """输出协战结果: 今日总进度只列次数不正常的账号"""
@@ -91,39 +135,25 @@ class ScriptTask(
         push_content = []
         # 当天已完成的账号不算"本次执行", 只在下面的总进度里体现
         executed = [result for result in results if not result['skipped']]
-        # 既不显示协战次数又没找勾协时, 这部分只剩账号名, 没有推送的价值
-        if executed and (
-            self.conf.push_config.executed_count_enable
-            or self.conf.assist_battle_config.find_jade_enable
-        ):
-            push_content.append(f"本次执行任务共{len(executed)}个账号：")
-            for result in executed:
-                if (
-                    result['jade_flag'] != self.FIND_JADE_NONE
-                    or not self.conf.push_config.find_jade_push_clear_enable
-                ):
-                    # 账号取前4位，服务器取后4位，角色名取后2位；开了完整显示就原样输出
-                    message = self.format_account_name(result, '**')
-                    if self.conf.push_config.executed_count_enable:
-                        if self.conf.assist_battle_config.evozone_enable:
-                            message += f"-觉醒{result['evozone_done']}次"
-                        if self.conf.assist_battle_config.realmraid_enable:
-                            message += f"-个突{result['realmraid_done']}次"
-                    if self.conf.assist_battle_config.find_jade_enable:
-                        message += f"-{result['jade_flag']}"
-                    logger.info(message)
-                    push_content.append(message)
+        executed_lines = self.format_executed_results(executed)
+        if executed_lines:
+            push_content.append(f"本次执行任务（{len(executed)}个账号）：")
+            for message in executed_lines:
+                logger.info(message)
+                push_content.append(message)
         # 未开启协战则不推送总进度
         if (
-            self.conf.assist_battle_config.evozone_enable
-            or self.conf.assist_battle_config.realmraid_enable
+            self.conf.battle_config.evozone_enable
+            or self.conf.battle_config.realmraid_enable
         ):
             # 次数正常的账号不再逐个列出, 只推送次数不正常的账号和明细
             abnormal = [r for r in results if not self.is_assist_count_normal(r)]
             if abnormal:
-                push_content.append(f"今日协战任务共{len(results)}个账号：")
+                push_content.append(f"今日协战任务（{len(results)}个账号）：")
             else:
-                push_content.append(f"今日协战任务共{len(results)}个账号，次数全部正常")
+                push_content.append(
+                    f"今日协战任务（{len(results)}个账号）：次数全部正常"
+                )
             for result in abnormal:
                 message = self.format_account_name(result, '…')
                 message += self.format_assist_count(result)
@@ -153,7 +183,7 @@ class ScriptTask(
             # 切号失败的账号在最后再尝试一次, 切换角色时滑动幅度过大个别账号会被跳过
             if (
                 failed_accounts
-                and self.conf.assist_battle_config.retry_failed_account_enable
+                and self.conf.optimize_config.retry_failed_account_enable
             ):
                 logger.hr(
                     'Retry %s account(s) which failed to switch' % len(failed_accounts),
@@ -200,8 +230,12 @@ class ScriptTask(
             evozone_final,
             realmraid_final,
             jade_flag,
+            jade_checked,
+            consignment_ticket,
         ) = self.run_current_account()
-        self.mark_account_done(account, evozone_final, realmraid_final)
+        self.mark_account_done(
+            account, evozone_final, realmraid_final, jade_checked, jade_flag
+        )
         results.append(
             {
                 'account': account.account,
@@ -213,6 +247,7 @@ class ScriptTask(
                 'evozone_final': evozone_final,
                 'realmraid_final': realmraid_final,
                 'jade_flag': jade_flag,
+                'consignment_ticket': consignment_ticket,
                 'skipped': False,
             }
         )
@@ -220,7 +255,7 @@ class ScriptTask(
 
     def append_skipped_result(self, account, results) -> None:
         """当天已完成的账号不登录确认, 按当前开启的协战类型推算结果计入总进度"""
-        cfg = self.conf.assist_battle_config
+        cfg = self.conf.battle_config
         results.append(
             {
                 'account': account.account,
@@ -231,72 +266,147 @@ class ScriptTask(
                 'realmraid_done': 0,
                 'evozone_final': self.EVOZONE_TOTAL if cfg.evozone_enable else 0,
                 'realmraid_final': self.REALMRAID_TOTAL if cfg.realmraid_enable else 0,
-                'jade_flag': self.FIND_JADE_NONE,
+                # 跳过的账号读上次记录的勾协状态(中断恢复也靠它)
+                'jade_flag': self._skipped_jade_flag(account),
+                'consignment_ticket': None,
                 'skipped': True,
             }
         )
 
+    def _skipped_jade_flag(self, account) -> str:
+        """跳过账号显示的勾协状态: 确认过的原样显示, 没确认过显示未知"""
+        valid = (
+            self.FIND_JADE_NONE,
+            self.FIND_JADE_NORMAL,
+            self.FIND_JADE_SPECIAL,
+        )
+        if account.jade_status in valid:
+            return account.jade_status
+        # 本周期还没确认过(初始 none 或中断), 显示未知以区别于真正的无勾
+        return self.FIND_JADE_UNKNOWN
+
     def is_account_done_today(self, account) -> bool:
-        """协战每天 0 点刷新, 当天已经打完的账号不必再登录确认一次"""
-        if not self.conf.assist_battle_config.skip_completed_account_enable:
+        """联合判定: 协战按 0 点、勾协按 5/18 点各看各的时间戳, 都完成才跳过"""
+        if not self.conf.optimize_config.skip_completed_account_enable:
             return False
-        return account.last_complete_time.date() == datetime.today().date()
+        battle_enabled = (
+            self.conf.battle_config.evozone_enable
+            or self.conf.battle_config.realmraid_enable
+        )
+        jade_enabled = self.conf.daily_config.find_jade_enable
+        if not (battle_enabled or jade_enabled):
+            return False
+        now = datetime.now()
+        if battle_enabled and account.last_complete_time.date() != now.date():
+            return False
+        if jade_enabled and account.jade_complete_time <= self._jade_refresh_point(now):
+            return False
+        return True
+
+    @staticmethod
+    def _jade_refresh_point(now: datetime) -> datetime:
+        """勾协最近一次刷新时刻(每天 5 点/18 点), 完成时间晚于它才算本周期。"""
+        points = [datetime.combine(now.date(), time(h, 0)) for h in (5, 18)]
+        passed = [p for p in points if p <= now]
+        if passed:
+            return max(passed)
+        return datetime.combine(now.date() - timedelta(days=1), time(18, 0))
+
+    def _current_model_account(self, account):
+        """从当前 config.model 找回账号对象（防中途 reload 导致写旧 model、save 落新 model）"""
+        current_conf = self.config.model.assist_battle
+        for candidate in current_conf.account_list or []:
+            if (
+                candidate.character == account.character
+                and candidate.svr == account.svr
+                and candidate.account == account.account
+            ):
+                return candidate
+        return None
 
     def mark_account_done(
-        self, account, evozone_final: int, realmraid_final: int
+        self,
+        account,
+        evozone_final: int,
+        realmraid_final: int,
+        jade_checked: bool = False,
+        jade_flag: str = FIND_JADE_NONE,
     ) -> None:
-        """记录当天协战已打完的账号, 重启后不会再登录它"""
-        cfg = self.conf.assist_battle_config
-        if not cfg.skip_completed_account_enable:
+        """协战、勾协各自记各自的时间戳, 写入前重取当前 model 的账号对象"""
+        battle = self.conf.battle_config
+        jade_enable = self.conf.daily_config.find_jade_enable
+        if not self.conf.optimize_config.skip_completed_account_enable:
             return
-        # 未开启协战时不记录, 避免把只挂日常的账号也标记掉
-        if not (cfg.evozone_enable or cfg.realmraid_enable):
-            return
-        if cfg.evozone_enable and evozone_final < self.EVOZONE_TOTAL:
-            return
-        if cfg.realmraid_enable and realmraid_final < self.REALMRAID_TOTAL:
-            return
-        account.last_complete_time = datetime.now()
-        self.config.save()
-        logger.info(
-            'Assist battle of %s-%s is done today, it will be skipped until next day',
-            account.character,
-            account.svr,
+        battle_all_done = (
+            (battle.evozone_enable or battle.realmraid_enable)
+            and (evozone_final >= self.EVOZONE_TOTAL or not battle.evozone_enable)
+            and (realmraid_final >= self.REALMRAID_TOTAL or not battle.realmraid_enable)
         )
+        jade_done = jade_enable and jade_checked
+        if not (battle_all_done or jade_done):
+            return
+        now = datetime.now()
+        # 从当前 model 重取对象（防中途 reload 错位），写不进就跳过
+        current = self._current_model_account(account)
+        if current is None:
+            logger.warning(
+                'mark_account_done: %s-%s not found in current config model, skip writing',
+                account.character,
+                account.svr,
+            )
+            return
+        # 各写各的: 协战时间只在打满时写, 勾协时间只在确认过时写
+        if battle_all_done:
+            current.last_complete_time = now
+        if jade_checked:
+            current.jade_complete_time = now
+            current.jade_status = jade_flag
+        self.config.save()
+        if battle_all_done:
+            logger.info(
+                'Assist battle of %s-%s is done today, it will be skipped until next day',
+                account.character,
+                account.svr,
+            )
+        if jade_done:
+            logger.info(
+                'Jade quests of %s-%s checked this cycle, it will be skipped until next refresh',
+                account.character,
+                account.svr,
+            )
 
     def run_current_account(self):
-        SUNDAY = 6
         # 执行任务前先获取本账号协战剩余次数以检查是否执行过前置任务，觉醒协战已做完将不再执行日常任务
         evozone_done, realmraid_done = 0, 0
         evozone_final, realmraid_final = 0, 0
         jade_flag = self.FIND_JADE_NONE
+        jade_checked = False
+        consignment_ticket = None
         # 不执行协战任务时，可以用来小号挂日常
         start_evozone = 1
 
         if (
-            self.conf.assist_battle_config.evozone_enable
-            or self.conf.assist_battle_config.realmraid_enable
+            self.conf.battle_config.evozone_enable
+            or self.conf.battle_config.realmraid_enable
         ):
             start_evozone, start_realmraid = self.get_assist_battle_count()
 
         # 邮件领取
         if (
-            self.conf.assist_battle_config.email_enable
-            and date.today().weekday() == SUNDAY
+            self.conf.daily_config.email_enable
+            and weekday_matches(self.conf.daily_config.email_weekday, date.today())
             and self.daily_window
         ):
             self.run_pickup_email()
             self.goto_page(page_main)
 
         # 寄售屋（买寄售券 + 买指定联动碎片，两个开关共用一次进寄售屋）
-        cfg = self.conf.assist_battle_config
-        buy_ticket = (
-            cfg.consignment_enable
-            and date.today().weekday() == SUNDAY
+        daily = self.conf.daily_config
+        buy_ticket = daily.consignment_enable and weekday_matches(
+            daily.consignment_weekday, date.today()
         )
-        buy_shikigami = (
-            cfg.consignment_shikigami_enable
-            and date.today().weekday() == cfg.consignment_shikigami_day.to_index()
+        buy_shikigami = daily.consignment_shikigami_enable and weekday_matches(
+            daily.consignment_shikigami_day, date.today()
         )
         if (buy_ticket or buy_shikigami) and self.daily_window:
             rm_con = self.config.rich_man.consignment
@@ -312,9 +422,15 @@ class ScriptTask(
                 rm_con.buy_sale_ticket = buy_ticket
                 rm_con.buy_shikigami = buy_shikigami
                 if buy_shikigami:
-                    rm_con.shikigami_name = cfg.consignment_shikigami_name
+                    rm_con.shikigami_name = daily.consignment_shikigami_name
                 self.goto_page(page_mall, confirm_wait=2.5)
                 self.execute_consignment()
+                # 买完停在寄售屋弹窗里，此时立即读券数；不要先 goto_page，
+                # 那样会把弹窗关掉，ROI 落到商城页读到别的内容。
+                if buy_ticket:
+                    ticket_count = self.get_consignment_ticket_count()
+                    if ticket_count is not None:
+                        consignment_ticket = ticket_count
                 self.goto_page(page_main)
             finally:
                 (
@@ -325,7 +441,7 @@ class ScriptTask(
                 ) = backup
 
         # 结界寄养
-        if self.conf.assist_battle_config.kekkaiutilize_enable and start_evozone > 0:
+        if self.conf.daily_config.kekkaiutilize_enable and start_evozone > 0:
             # 进入寮结界
             self.goto_page(page_guild_realm)
             self.check_utilize_add()
@@ -333,7 +449,7 @@ class ScriptTask(
 
         # 庭院事务
         if (
-            self.conf.assist_battle_config.courtyard_affairs_enable
+            self.conf.daily_config.courtyard_affairs_enable
             and start_evozone > 0
             and self.daily_window
         ):
@@ -342,7 +458,7 @@ class ScriptTask(
 
         # 商店签到
         if (
-            self.conf.assist_battle_config.store_sign_enable
+            self.conf.daily_config.store_sign_enable
             and start_evozone > 0
             and self.daily_window
         ):
@@ -352,30 +468,32 @@ class ScriptTask(
             self.goto_page(page_main)
 
         # 寻找勾协
-        if self.conf.assist_battle_config.find_jade_enable:
+        if self.conf.daily_config.find_jade_enable:
             jade_flag = self.find_jade()
             if (
                 jade_flag == self.FIND_JADE_NORMAL
-                and self.conf.assist_battle_config.find_jade_finish_enable
+                and self.conf.daily_config.find_jade_finish_enable
             ):
                 self.run_own_wanted_quests()
             self.ui_click_until_disappear(self.I_UI_BACK_RED, interval=1)
             self.goto_page(page_main)
+            # 页面打开过才算确认(未知 = 没打开, 不记, 下轮重查)
+            jade_checked = jade_flag != self.FIND_JADE_UNKNOWN
 
         # 执行觉醒副本任务
-        if self.conf.assist_battle_config.evozone_enable and start_evozone > 0:
+        if self.conf.battle_config.evozone_enable and start_evozone > 0:
             self.run_evozone(start_evozone)
             self.goto_page(page_main)
 
         # 执行结界突破任务
-        if self.conf.assist_battle_config.realmraid_enable and start_realmraid > 0:
+        if self.conf.battle_config.realmraid_enable and start_realmraid > 0:
             self.run_realmraid(start_realmraid)
             self.goto_page(page_main)
 
         # 统计本次执行完成的协战任务
         if (
-            self.conf.assist_battle_config.evozone_enable
-            or self.conf.assist_battle_config.realmraid_enable
+            self.conf.battle_config.evozone_enable
+            or self.conf.battle_config.realmraid_enable
         ):
             end_evozone, end_realmraid = self.get_assist_battle_count()
             evozone_done = start_evozone - end_evozone
@@ -383,27 +501,36 @@ class ScriptTask(
             # 今天已经完成的任务
             evozone_final = self.EVOZONE_TOTAL - end_evozone
             realmraid_final = self.REALMRAID_TOTAL - end_realmraid
-            if self.conf.assist_battle_config.evozone_enable:
+            if self.conf.battle_config.evozone_enable:
                 logger.info(
                     "本次协战完成：觉醒 %s 次，结界突破 %s 次",
                     evozone_done,
                     realmraid_done,
                 )
-            if self.conf.assist_battle_config.realmraid_enable:
+            if self.conf.battle_config.realmraid_enable:
                 logger.info(
                     "最终协战完成：觉醒 %s 次，结界突破 %s 次",
                     evozone_final,
                     realmraid_final,
                 )
 
-        return evozone_done, realmraid_done, evozone_final, realmraid_final, jade_flag
+        return (
+            evozone_done,
+            realmraid_done,
+            evozone_final,
+            realmraid_final,
+            jade_flag,
+            jade_checked,
+            consignment_ticket,
+        )
 
     def find_jade(self):
-        """寻找勾协并标记"""
+        """寻找勾协并标记，返回 无勾/普勾/现勾/未知"""
         if self.get_current_page() != page_main:
             self.goto_page(page_main)
         # 打开悬赏封印 界面
-        done_timer = Timer(5)
+        open_timer = Timer(8)
+        open_timer.start()
         while 1:
             self.screenshot()
             if self.appear(WantedQuestsAssets.I_TRACE_ENABLE) or self.appear(
@@ -414,18 +541,29 @@ class ScriptTask(
                 continue
             if self.appear_then_click(WantedQuestsAssets.I_WQ_DONE, interval=1):
                 continue
-            if self.appear(self.I_UI_BACK_RED):
-                if not done_timer.started():
-                    done_timer.start()
-            if done_timer.started() and done_timer.reached():
+            if open_timer.reached():
                 self.ui_click_until_disappear(self.I_UI_BACK_RED)
-                return self.FIND_JADE_NONE
+                # 页面没打开, 无法确认有没有勾, 不能当"无勾"记
+                logger.warning('悬赏封印页面 15 秒未打开, 勾协状态记为未知')
+                return self.FIND_JADE_UNKNOWN
 
-        if not (
-            self.appear(WantedQuestsAssets.I_WQ_INVITE_1)
-            or self.appear(WantedQuestsAssets.I_WQ_INVITE_2)
-            or self.appear(WantedQuestsAssets.I_WQ_INVITE_3)
-        ):
+        # 页面刚打开时槽位图片可能还没渲染完（页面框架先出、任务图后加载），
+        prev = None
+        invited = False
+        for _ in range(10):
+            invited = (
+                self.appear(WantedQuestsAssets.I_WQ_INVITE_1)
+                or self.appear(WantedQuestsAssets.I_WQ_INVITE_2)
+                or self.appear(WantedQuestsAssets.I_WQ_INVITE_3)
+            )
+            current = bool(invited)
+            if prev is not None and current == prev:
+                break
+            prev = current
+            sleep(0.5)
+            self.screenshot()
+
+        if not invited:
             logger.info("there is no cooperation quest")
             return self.FIND_JADE_NONE
         # 存在勾协即返回对应类型
@@ -470,6 +608,59 @@ class ScriptTask(
             wq_conf.cooperation_only = cooperation_only_backup
             wq_conf.cooperation_type = cooperation_type_backup
 
+    def get_consignment_ticket_count(self):
+        """读取寄售屋弹窗里的寄售券数量，读不到返回 None。
+
+        照搬日常任务 read_title_value 的做法：裁掉 ROI 左右空白让数字居中，
+        再直调底层模型并校验置信度，不足则回退普通 ocr()。
+        """
+        rule = self.O_CONSIGNMENT_TICKTS
+        image = self.device.image
+        result = None
+        try:
+            x, y, w, h = rule.roi
+            crop = rule.pre_process(image[y : y + h, x : x + w])
+            crop = self._trim_ocr_margin(crop)
+            raw, score = rule.model.ocr_single_line(crop)
+            if raw and score >= rule.score:
+                result = rule.after_process(raw)
+                logger.info('寄售券数量(裁边识别): %r score=%.2f', raw, score)
+        except Exception as e:
+            logger.warning('寄售券裁边识别异常，回退普通流程: %s', e)
+
+        if result is None:
+            result = rule.ocr(image)
+
+        count = self._parse_ticket_ocr(result)
+        if count is None:
+            logger.warning('寄售券数量读取失败: %r', result)
+            return None
+        logger.info('寄售券数量: %s（原始 %r）', count, result)
+        return count
+
+    @classmethod
+    def _trim_ocr_margin(cls, image, threshold: int = 130, pad: int = 2):
+        """裁掉左右纯背景空白列，各保留 pad 像素（同 DailyTrifles）。"""
+        column_max = image.max(axis=2).max(axis=0)
+        ink = np.where(column_max > threshold)[0]
+        if not len(ink):
+            return image
+        x0 = max(0, int(ink[0]) - pad)
+        x1 = min(image.shape[1], int(ink[-1]) + 1 + pad)
+        return image[:, x0:x1]
+
+    @staticmethod
+    def _parse_ticket_ocr(raw):
+        """把 OCR 结果统一成整数；无法解析返回 None。"""
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str):
+            digits = ''.join(ch for ch in raw if ch.isdigit())
+            return int(digits) if digits else None
+        return None
+
     def get_assist_battle_count(self):
         """获取当前账号剩余的协战次数。"""
         self.goto_page(page_assist_battle)
@@ -499,12 +690,12 @@ class ScriptTask(
         con = self.config.realm_raid
 
         con.raid_config.number_attack = count
-        if self.conf.assist_battle_config.realmraid_easy_enable:
+        if self.conf.battle_config.realmraid_easy_enable:
             con.raid_config.exit_four = False
             con.raid_config.order_attack = '0 > 1 > 2 > 3 > 4 > 5'
         con.general_battle_config.lock_team_enable = True
         con.switch_soul_config.enable = False
-        if self.conf.assist_battle_config.switch_soul_enable:
+        if self.conf.battle_config.switch_soul_enable:
             con.switch_soul_config.enable = True
         self.run_realmraid_core(con)
 

@@ -131,9 +131,8 @@ class ItachiCoinShop(BaseModel):
     itachi_coin_buy_jade: bool = Field(
         title='购买鼬乐礼盒',
         default=False,
-        description='开启后，进娱乐页的鼬乐园商店，用鼬乐币买掉前排自动前移的鼬乐礼盒，'
-                    '每次最多 3 个。出现「鼬乐币不足」或奖励弹窗认不出就自动停手。'
-                    '默认关闭；本功能任何异常都只记警告，不会打断大富翁流程。',
+        description='用鼬乐币买掉前排自动前移的鼬乐礼盒，每次最多 3 个；'
+                    '鼬乐币不足或奖励弹窗认不出就停手',
     )
 
 
