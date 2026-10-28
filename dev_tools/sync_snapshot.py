@@ -30,6 +30,10 @@
     * 只在快照链上**追加**提交（父提交 = 快照当前 tip），所以永远是快进，
       不需要 --force；推送时再用 --force-with-lease 钉住旧 sha 防并发。
     * 新树与旧树相同则直接跳过，不产生空提交。
+    * 提交**标题**按「自上次同步以来的自建提交」自动生成，形如
+      `chore(snapshot): dev_tools · 提交查看器改为随 OAS 启动`；
+      没有提交信息可用时退化为目录汇总 `RichMan ~1 -8 · dev_tools +5`。
+      目的是让快照链上一眼看出每条的来源，而不是一串同名提交。
     * 提交信息末尾写 `Self-Snapshot-Src: <源 sha>`，下次据此算「这次同步
       带来了哪些自建提交」，不用手工记。
 """
@@ -214,8 +218,93 @@ def new_commits(root, base, head):
     return [ln for ln in out.splitlines() if ln.strip()]
 
 
+COMMIT_RE = re.compile(
+    r"^([0-9a-fA-F]{7,40})\s+([A-Za-z]+)(?:\(([^)]+)\))?!?:\s*(.+)$"
+)
+# 这些顶层目录下面还有一层才是业务单元（tasks/AreaBoss/…），汇总时取两段
+PREFIX_DIRS = ("tasks", "module", "assets", "deploy", "config")
+TITLE_MAX_DIRS = 4
+
+
+def parse_commit(oneline):
+    """'81aca919 feat(dev_tools):xxx' -> ('feat', 'dev_tools', 'xxx')"""
+    s = oneline.strip()
+    m = COMMIT_RE.match(s)
+    if not m:
+        parts = s.split(None, 1)
+        return "", "", (parts[1] if len(parts) > 1 else s).strip()
+    return m.group(2).lower(), (m.group(3) or "").strip(), m.group(4).strip()
+
+
+def dir_label(path):
+    """文件路径 -> 汇总标签。
+
+    tasks/RichMan/x.py    -> RichMan        （tasks/ 是所有任务的公共前缀，去掉更短）
+    assets/i18n/x.json    -> assets/i18n
+    dev_tools/x.py        -> dev_tools
+    server.py             -> 根目录
+    """
+    parts = path.split("/")
+    if len(parts) <= 1:
+        return "根目录"
+    if len(parts) >= 3 and parts[0] in PREFIX_DIRS:
+        return parts[1] if parts[0] == "tasks" else "/".join(parts[:2])
+    return parts[0]
+
+
+def build_title(commits, added, updated, removed):
+    """标题摘要（方案 B）。
+
+    1. 有自建提交 -> 取最新一条 feat/fix 的 `scope · desc`，多条再加「等 N 项」；
+       全是 chore 时退而取最新一条。
+    2. 没有提交信息可用（快照正文里没记、如首次同步）-> 按顶层目录汇总
+       `RichMan ~1 -8 · dev_tools +5`；变动很少时直接点名文件。
+    """
+    picked = None
+    for line in commits:  # git log 默认新→旧
+        typ, scope, desc = parse_commit(line)
+        if typ in ("feat", "fix") and desc:
+            picked = (scope, desc)
+            break
+    if picked is None and commits:
+        scope, desc = parse_commit(commits[0])[1:]
+        if desc:
+            picked = (scope, desc)
+    if picked:
+        scope, desc = picked
+        title = ("%s · %s" % (scope, desc)) if scope else desc
+        if len(commits) > 1:
+            title += " 等 %d 项" % len(commits)
+        return title
+
+    stat = {}
+    for kind, paths in (("+", added), ("~", updated), ("-", removed)):
+        for p in paths:
+            stat.setdefault(dir_label(p), {"+": 0, "~": 0, "-": 0})[kind] += 1
+    if not stat:
+        return "同步自建改动"
+
+    total = len(added) + len(updated) + len(removed)
+    if total == 1:  # 只动了一个文件时直接点名，比目录计数更直观
+        if added:
+            return "+%s" % added[0]
+        if updated:
+            return "~%s" % updated[0]
+        return "-%s" % removed[0]
+
+    order = sorted(stat.items(), key=lambda kv: (-sum(kv[1].values()), kv[0]))
+    shown = []
+    for d, b in order[:TITLE_MAX_DIRS]:
+        bits = " ".join("%s%d" % (k, b[k]) for k in ("+", "~", "-") if b[k])
+        shown.append("%s %s" % (d, bits))
+    tail = ""
+    if len(order) > TITLE_MAX_DIRS:
+        tail = " 等 %d 处" % len(order)
+    return " · ".join(shown) + tail
+
+
 def commit_message(keep, drop, added, updated, removed, commits, src_sha):
-    lines = ["chore(snapshot): 同步自建改动快照", ""]
+    lines = ["chore(snapshot): %s" % build_title(commits, added, updated, removed), ""]
     lines.append("快照共 %d 个文件（新增 %d / 更新 %d / 移除 %d）。"
                  % (len(keep), len(added), len(updated), len(removed)))
     if added or updated or removed:

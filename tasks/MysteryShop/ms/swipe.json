@@ -1,0 +1,16 @@
+[
+  {
+    "itemName": "ms_scroll_down",
+    "roiFront": "432,520,312,40",
+    "roiBack": "432,90,312,40",
+    "mode": "default",
+    "description": "商品区下滑（内容上移）：起点固定在下部 y=520~560、终点在上部 y=90~130，纵向跨度 390~470，横向 x=432~744 随机；一次就是一大屏"
+  },
+  {
+    "itemName": "ms_scroll_up",
+    "roiFront": "432,90,312,40",
+    "roiBack": "432,520,312,40",
+    "mode": "default",
+    "description": "商品区上滑（内容下移，回列表顶部）：起点在上部 y=90~130、终点在下部 y=520~560，跨度 390~470，方向与 ms_scroll_down 相反"
+  }
+]

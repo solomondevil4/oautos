@@ -1,0 +1,164 @@
+[
+  {
+    "itemName": "me_enter",
+    "imageName": "ms_me_enter.png",
+    "roiFront": "52,494,59,44",
+    "roiBack": "52,494,59,44",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "进入"
+  },
+  {
+    "itemName": "ms_share",
+    "imageName": "ms_ms_share.png",
+    "roiFront": "24,571,100,100",
+    "roiBack": "24,571,100,100",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "点击分享"
+  },
+  {
+    "itemName": "ms_before",
+    "imageName": "ms_ms_before.png",
+    "roiFront": "25,317,39,52",
+    "roiBack": "25,317,39,52",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "上一个"
+  },
+  {
+    "itemName": "ms_next",
+    "imageName": "ms_ms_next.png",
+    "roiFront": "1226,315,36,53",
+    "roiBack": "1226,315,36,53",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "下一个"
+  },
+  {
+    "itemName": "invite_ensure",
+    "imageName": "ms_invite_ensure.png",
+    "roiFront": "711,545,127,60",
+    "roiBack": "711,545,127,60",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "分享"
+  },
+  {
+    "itemName": "ms_shop_page",
+    "imageName": "ms_ms_shop_page.png",
+    "roiFront": "153,640,171,35",
+    "roiBack": "139,626,199,63",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "今日购买次数（说明当前在神秘商店购买页）"
+  },
+  {
+    "itemName": "ms_own_page",
+    "imageName": "ms_ms_own_page.png",
+    "roiFront": "1006,633,152,46",
+    "roiBack": "992,619,180,74",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "神秘商人（自己的商店=第一页）"
+  },
+  {
+    "itemName": "ms_coin_1",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "196,255,39,39",
+    "roiBack": "165,240,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 1 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_2",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "421,255,39,39",
+    "roiBack": "390,240,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 2 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_3",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "647,255,39,39",
+    "roiBack": "616,240,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 3 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_4",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "872,255,39,39",
+    "roiBack": "841,240,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 4 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_5",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "196,517,39,39",
+    "roiBack": "165,500,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 5 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_6",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "421,517,39,39",
+    "roiBack": "390,500,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 6 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_7",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "647,517,39,39",
+    "roiBack": "616,500,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 7 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_8",
+    "imageName": "ms_ms_coin.png",
+    "roiFront": "872,517,39,39",
+    "roiBack": "841,500,200,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "第 8 格价格牌左侧金币图标（判断该格是否为金币道具）"
+  },
+  {
+    "itemName": "ms_coin_buy",
+    "imageName": "ms_ms_coin_buy.png",
+    "roiFront": "572,530,41,42",
+    "roiBack": "558,516,69,70",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "金币购买按钮图标（购买弹窗内）"
+  },
+  {
+    "itemName": "ms_no_coin",
+    "imageName": "ms_ms_no_coin.png",
+    "roiFront": "487,139,291,69",
+    "roiBack": "467,119,331,109",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "金币不足弹出的「购买金币」窗口标题（出现即表示金币不够，放弃金币购买）"
+  },
+  {
+    "itemName": "ms_refresh_5",
+    "imageName": "ms_ms_refresh_5.png",
+    "roiFront": "1176,592,91,27",
+    "roiBack": "1150,578,180,55",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "刷新按钮下方的「5(仅1次)」价格标签（出现=本日还能花5勾玉刷新一次）"
+  }
+]

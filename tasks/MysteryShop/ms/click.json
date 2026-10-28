@@ -1,0 +1,68 @@
+[
+  {
+    "itemName": "ms_item_1",
+    "roiFront": "190,125,105,120",
+    "roiBack": "190,125,105,120",
+    "description": "第 1 格道具"
+  },
+  {
+    "itemName": "ms_item_2",
+    "roiFront": "415,125,105,120",
+    "roiBack": "415,125,105,120",
+    "description": "第 2 格道具"
+  },
+  {
+    "itemName": "ms_item_3",
+    "roiFront": "641,125,105,120",
+    "roiBack": "641,125,105,120",
+    "description": "第 3 格道具"
+  },
+  {
+    "itemName": "ms_item_4",
+    "roiFront": "866,125,105,120",
+    "roiBack": "866,125,105,120",
+    "description": "第 4 格道具"
+  },
+  {
+    "itemName": "ms_item_5",
+    "roiFront": "190,375,105,120",
+    "roiBack": "190,375,105,120",
+    "description": "第 5 格道具"
+  },
+  {
+    "itemName": "ms_item_6",
+    "roiFront": "415,375,105,120",
+    "roiBack": "415,375,105,120",
+    "description": "第 6 格道具"
+  },
+  {
+    "itemName": "ms_item_7",
+    "roiFront": "641,375,105,120",
+    "roiBack": "641,375,105,120",
+    "description": "第 7 格道具"
+  },
+  {
+    "itemName": "ms_item_8",
+    "roiFront": "866,375,105,120",
+    "roiBack": "866,375,105,120",
+    "description": "第 8 格道具"
+  },
+  {
+    "itemName": "ms_blank",
+    "roiFront": "9,105,101,124",
+    "roiBack": "9,105,101,124",
+    "description": "弹窗左侧空白（点此关闭弹窗）"
+  },
+  {
+    "itemName": "ms_close",
+    "roiFront": "938,138,41,35",
+    "roiBack": "938,138,41,35",
+    "description": "「购买金币」弹窗右上角 X（金币不足时必须点这里关闭）"
+  },
+  {
+    "itemName": "ms_refresh",
+    "roiFront": "1203,535,51,46",
+    "roiBack": "1203,535,51,46",
+    "description": "刷新商店按钮（花 5 勾玉刷新一次）"
+  }
+]

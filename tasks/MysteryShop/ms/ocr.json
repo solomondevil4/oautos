@@ -1,0 +1,101 @@
+[
+  {
+    "itemName": "ms_friend",
+    "roiFront": "1017,660,58,38",
+    "roiBack": "1017,660,58,38",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "好友名字"
+  },
+  {
+    "itemName": "ms_records",
+    "roiFront": "324,638,44,36",
+    "roiBack": "324,638,44,36",
+    "mode": "Digit",
+    "method": "Default",
+    "keyword": "",
+    "description": "记录购买多少个的"
+  },
+  {
+    "itemName": "ms_level",
+    "roiFront": "1010,618,250,46",
+    "roiBack": "1010,618,250,46",
+    "mode": "Digit",
+    "method": "Default",
+    "keyword": "",
+    "description": "神秘商人等级（整段「神秘商人 LvN」，Digit 模式取数字）"
+  },
+  {
+    "itemName": "ms_left_1",
+    "roiFront": "165,66,204,36",
+    "roiBack": "165,66,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 1 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_2",
+    "roiFront": "390,66,204,36",
+    "roiBack": "390,66,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 2 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_3",
+    "roiFront": "616,66,204,36",
+    "roiBack": "616,66,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 3 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_4",
+    "roiFront": "841,66,204,36",
+    "roiBack": "841,66,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 4 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_5",
+    "roiFront": "165,326,204,36",
+    "roiBack": "165,326,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 5 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_6",
+    "roiFront": "390,326,204,36",
+    "roiBack": "390,326,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 6 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_7",
+    "roiFront": "616,326,204,36",
+    "roiBack": "616,326,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 7 格剩余购买次数"
+  },
+  {
+    "itemName": "ms_left_8",
+    "roiFront": "841,326,204,36",
+    "roiBack": "841,326,204,36",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "第 8 格剩余购买次数"
+  }
+]

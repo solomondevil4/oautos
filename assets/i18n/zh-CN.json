@@ -383,5 +383,7 @@
   "notify_image_enable": "报错推送附带截图",
   "notify_image_enable_help": "开启后报错推送会附带最近一张游戏截图。支持渠道: 邮件(SMTP, 图片作为附件)、企业微信机器人(单独发送一条图片消息)；其他渠道只推文本。也可以在推送配置里加一行 notify_image_enable: false 关闭。",
   "jade_complete_time": "勾协发现时间",
-  "jade_complete_time_help": "仅用于寻找勾协：记录本次发现勾协的时间。(上方的上次登录时间:仅用于协战任务)"
+  "jade_complete_time_help": "仅用于寻找勾协：记录本次发现勾协的时间。(上方的上次登录时间:仅用于协战任务)",
+  "fail_notify_enable": "挑战失败推送",
+  "area_boss_fail_notify_help": "地鬼挑战失败时推送通知"
 }
