@@ -29,6 +29,10 @@ def position_offset(src, offset: tuple):
     return src[0] + offset[0], src[1] + offset[1], src[2] + offset[2], src[3] + offset[3]
 
 
+# 「建立道馆」最多点几次: 该弹的确认框第 1、2 次就弹了, 多点纯属无效点击
+CLICK_CREATE_DOKAN_TIMES = 3
+
+
 class DokanFinishedError(Exception):
     pass
 
@@ -459,6 +463,9 @@ class ScriptTask(GameUi, SwitchSoul, GeneralBattle, DokanAssets):
         注意确认框盖不住底部按钮栏，弹窗开着时 CREATE_DOKAN 仍能命中（0.9958），
         因此每轮循环**必须先判 ENSURE 再点 CREATE_DOKAN**，顺序不能换。
 
+        「建立道馆」最多点 CLICK_CREATE_DOKAN_TIMES（3）次，每次间隔 2 秒；
+        早先的 10 秒超时会白点 5 次，实测该弹的框第 1、2 次就弹了。
+
         已知盲区：建立道馆要消耗 **70 寮资金**，余额不足时点下去同样不弹确认框，
         表现为「和已建立一模一样」。本任务没有资金检测（上游也没有），
         所以「无弹窗」只能记成「可能已建立，也可能没钱」，不能当已建立的铁证。
@@ -477,18 +484,26 @@ class ScriptTask(GameUi, SwitchSoul, GeneralBattle, DokanAssets):
                 self.ui_click_until_appear_or_timeout(self.I_RYOU_DOKAN_CREATE_DOKAN_ENSURE,
                                                       stop=self.I_RYOU_DOKAN_DOKAN_INFO_CLOSE, interval=2, timeout=10)
                 continue
-            # 按钮都不在屏幕上，说明当前页面不是道馆地图，别白等 10 秒
+            # 按钮都不在屏幕上，说明当前页面不是道馆地图，别白等
             if not self.appear(self.I_RYOU_DOKAN_CREATE_DOKAN):
                 logger.warning('Dokan: 界面上没有「建立道馆」按钮，跳过建立流程')
                 return False
-            if self.ui_click_until_appear_or_timeout(self.I_RYOU_DOKAN_CREATE_DOKAN,
-                                                     self.I_RYOU_DOKAN_CREATE_DOKAN_ENSURE, interval=2, timeout=10):
+            # 只点 3 次，每次点完等 2 秒看有没有弹确认框。
+            # 原来用 ui_click_until_appear_or_timeout(timeout=10) 会白点 5 次
+            # （2026-10-29 20:33 实测），而该弹的框第 1、2 次就弹了，3 次足够。
+            for _ in range(CLICK_CREATE_DOKAN_TIMES):
+                self.appear_then_click(self.I_RYOU_DOKAN_CREATE_DOKAN)
+                sleep(2)
+                self.screenshot()
+                if self.appear(self.I_RYOU_DOKAN_CREATE_DOKAN_ENSURE):
+                    break
+            if self.appear(self.I_RYOU_DOKAN_CREATE_DOKAN_ENSURE):
                 continue
-            # 点了 10 秒都没等到确认框。注意有**两种**可能，别一口咬定是已建立：
+            # 点满 3 次都没等到确认框。注意有**两种**可能，别一口咬定是已建立：
             #   a) 道馆本来就建好了（按钮是死的）
             #   b) 寮资金不足 70（游戏里建立道馆要消耗 70 寮资金，余额不够同样点不出确认框）
             # 上游原版注释只承认 a，实测 16384 出现过余额 0 的情况，故这里把 b 也写出来。
-            logger.info('Dokan: 点击「建立道馆」10 秒无弹窗（可能已建立，也可能寮资金不足 70，请看右上角余额）')
+            logger.info('Dokan: 点击「建立道馆」3 次均无弹窗（可能已建立，也可能寮资金不足 70，请看右上角余额）')
             return False
         logger.warning('Dokan: 建立道馆重试 3 轮仍未收敛，跳过')
         return False
