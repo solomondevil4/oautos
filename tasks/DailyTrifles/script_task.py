@@ -463,12 +463,37 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 logger.warning('There is no any luck msg')
                 break
 
-        # 主界面可能被协战横幅遮挡导致识别失败，先清浮层再兜底绕行
+        # 主界面可能被浮层遮挡导致识别失败：先点红 × 清掉吉闻本身，直到看见主界面底部的「阴阳寮」
         self.ui_click_until_appear_or_timeout(
             self.I_UI_BACK_RED, stop=self.I_MAIN_GOTO_GUILD, interval=1, timeout=8
         )
 
-        if self.wait_until_appear_then_click(self.I_MAIN_GOTO_GUILD, wait_time=3):
+        self.screenshot()
+        if self.appear(self.I_MAIN_GOTO_GUILD):
+            # 已经在主界面（或其上的浮层还在）：进「阴阳寮」再点黄箭头退回来，绕一圈把浮层破掉。
+            #
+            # NOTE 这里**不能只点一次**。2026-10-29 13:42 实测：主界面上压着一层
+            # 「友情点 / 可在兑换商店中兑换奖励 / 获取途径：好友赠送」的物品说明面板，
+            # 它是模态的 —— 第一下点击只会关掉它、不会触发底下的「阴阳寮」按钮。
+            # 旧代码用 wait_until_appear_then_click 只点一次就往下走，结果人还停在主界面，
+            # 而那个面板又把庭院识别素材 I_CHECK_MAIN_17 盖住（实测 0.3479 < 阈值 0.75，
+            # 干净庭院是 0.9968），于是 goto_page(page_main) 每轮 Page detect miss，
+            # 30 秒后 navigation stalled 直接报错重启。
+            # 所以改成一直点，直到真的离开主界面（进了寮界面就看不到底部「阴阳寮」了）。
+            enter_timer = Timer(8).start()
+            entered = False
+            while not enter_timer.reached():
+                self.screenshot()
+                if not self.appear(self.I_MAIN_GOTO_GUILD):
+                    entered = True
+                    break
+                # interval 1.5s：8 秒内最多点 6 次，既够破两层浮层，也不会撞上
+                # 设备层「同一按钮短时 ≥10 次」的 GameTooManyClickError 保护。
+                self.appear_then_click(self.I_MAIN_GOTO_GUILD, interval=1.5)
+            if not entered:
+                logger.warning('luck msg: 点「阴阳寮」8 秒仍未离开主界面')
+
+            # 从寮界面点黄箭头回主界面
             self.ui_click_until_appear_or_timeout(
                 self.I_UI_BACK_YELLOW, stop=self.I_MAIN_GOTO_GUILD, interval=1, timeout=8
             )
