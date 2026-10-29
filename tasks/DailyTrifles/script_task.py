@@ -33,6 +33,7 @@ from tasks.GameUi.default_pages import random_click
 from tasks.DailyTrifles.config import DailyTriflesConfig
 from tasks.DailyTrifles.assets import DailyTriflesAssets
 from tasks.Component.Summon.summon import Summon
+from tasks.RichMan.mall.navbar import MallNavbar
 
 from module.logger import logger
 from module.exception import TaskEnd
@@ -42,7 +43,14 @@ import re
 from typing import Any, Optional, List, Callable
 
 
-class ScriptTask(GameUi, Summon, DailyTriflesAssets):
+class ScriptTask(MallNavbar, Summon, DailyTriflesAssets):
+    """
+    继承 MallNavbar 是为了复用商城导航原语 `_enter_special()`（进杂货铺 -> 点右侧竖排「特殊」），
+    它内部每一步都有明确的成功判据，比本文件原来手抄的那段裸 `while 1` 稳。
+
+    注意继承顺序：MallNavbar 排在 DailyTriflesAssets 前面，意味着 RichManAssets 的素材优先。
+    已核对两个 assets 类的全部大写属性名，**零重名**，不会互相覆盖。
+    """
 
     def run(self):
         con = self.config.daily_trifles.trifles_config
@@ -541,24 +549,36 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
         if self.config.daily_trifles.today_is_done('sushi'):
             logger.info('Today is done, skip')
             return
-        # 进入Special
-        while 1:
-            from tasks.RichMan.assets import RichManAssets
-            from tasks.LevelRush.assets import LevelRushAssets
-
-            self.screenshot()
-            if self.appear(RichManAssets.I_SIDE_CHECK_SPECIAL) and self.appear(
-                self.I_SPECIAL_SUSHI
-            ):
-                break
-            if self.appear(LevelRushAssets.I_SIDE_CHECK_ROOKIE_MALL):
-                self.ui_click(
-                    LevelRushAssets.I_ROOKIE_GOTO_SPECIAL,
-                    RichManAssets.I_SIDE_CHECK_SPECIAL,
-                )
-                continue
-            if self.appear_then_click(RichManAssets.I_MALL_SUNDRY, interval=1):
-                continue
+        # 进入「特殊」（体力）页
+        #
+        # 2026-10-29 15:36 配置4 事故复盘：run_store_sign() 领完礼包签后直接返回、没回商城，
+        # run_buy_sushi() 接手时人还停在「礼包屋」。原来这里是一段裸 while 1，三个判据在礼包屋上的
+        # 实测值是：I_SIDE_CHECK_SPECIAL 0.9478 误命中（那其实是顶部体力寿司图标）、
+        # I_SPECIAL_SUSHI 0.5638 未命中、I_SIDE_CHECK_ROOKIE_MALL 0.9928 误命中（那其实是顶部红勾玉
+        # 图标——礼包屋比庭院多显示一个「4」和一个「+」，整排元素右移，把勾玉推到了固定 ROI x913 上）。
+        # 于是走进第二支 ui_click(I_ROOKIE_GOTO_SPECIAL, stop=I_SIDE_CHECK_SPECIAL)，
+        # 而 ui_click 第一句就是 if appear(stop): break —— stop 恒误命中，一个点击都不发就 continue，
+        # 回到循环再判一次；60 秒零点击后设备层判 GameStuckError，重启游戏。
+        #
+        # 改法：换上上游 RichMan 里已经验证过的 _enter_special()：
+        #   进杂货铺（ui_click 直到 I_MALL_SUNDRY_CHECK 出现；礼包屋实测 0.4727 -> 点击后 0.9421）
+        #   -> 在右侧竖排列表里点「特殊」
+        #   -> 用 I_SIDE_CHECK_SPECIAL 确认真的到了体力页（杂货铺 0.4934 不命中、体力页 0.9553 命中）
+        # 每一步都有明确的「到没到」判据，而不是一段靠巧合成立的点击序列。
+        #
+        # 先确认自己在「商城的某个子页」里。
+        #
+        # 这里不用 goto_page(page_mall) 无条件回首页，也不用 I_CHECK_MALL 判断（实测那张素材在
+        # 商城首页只有 0.5825、杂货铺 0.5806，低于 0.8 阈值，判不准）。改用一个实测很干净的判据
+        # I_MALL_SUNDRY（底部「杂货铺」）：商城首页 0.9773、杂货铺 0.9149、体力页 0.9149、
+        # 礼包屋 0.9496 都命中（礼包屋本来就是商城子页），庭院 0.2094 不命中。阈值 0.8。
+        # 在商城里就不调 goto_page（省掉一次不必要的导航），真掉到庭院去了才回商城兜底。
+        self.screenshot()
+        if not self.appear(self.I_MALL_SUNDRY):
+            self.goto_page(page_mall, confirm_wait=3)
+        if not self._enter_special():
+            logger.warning('store sushi: 没能进入商城「特殊」页，跳过购买体力')
+            return
 
         def detect_buy_count(base_element) -> (int, int):
             # 返回count,price
@@ -584,6 +604,14 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
 
         roi = None
         # 购买体力
+        #
+        # 上游这里是裸 while 1：只要界面不在下面这两个预期状态（弹窗没关、还在加载、热更公告、
+        # 或者干脆误停在别的页面），就会一直 screenshot + 模板匹配地空转，
+        # 60 秒后被设备层的「长时间无有效操作」判定为 GameStuckError，整个任务被打断重启。
+        #
+        # 改成「无进展」计时器：每真正做成一步（领到一次体力 / 成功打开价格弹窗）就 reset，
+        # 只有连续 30 秒一步都做不成才退出。正常购买不受影响，配置买很多次也不会被误杀。
+        idle_timer = Timer(30).start()
         while 1:
             self.screenshot()
             # count, price = detect_buy_count(roi)
@@ -601,6 +629,7 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                     break
                 if self.ui_get_reward(self.I_STORE_COST_TYPE_JADE, click_interval=2.5):
                     logger.info(f"Buy Sushi With {price} Jade")
+                    idle_timer.reset()
                     continue
 
             if self.appear(self.I_SPECIAL_SUSHI):
@@ -612,7 +641,15 @@ class ScriptTask(GameUi, Summon, DailyTriflesAssets):
                 self.ui_click(
                     self.I_SPECIAL_SUSHI, stop=self.I_STORE_COST_TYPE_JADE, interval=2
                 )
+                idle_timer.reset()
                 continue
+
+            # 走到这里说明这一轮既没打开价格弹窗、也没识别到体力商品 —— 界面不在预期状态
+            if idle_timer.reached():
+                logger.warning(
+                    'store sushi: 30 秒没有任何进展，界面不在体力页，跳过购买体力'
+                )
+                break
         self.config.daily_trifles.done_record.sushi_dt = datetime.now()
 
     def run_courtyard_affairs(self):
