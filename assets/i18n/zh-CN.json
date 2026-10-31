@@ -385,5 +385,18 @@
   "jade_complete_time": "勾协发现时间",
   "jade_complete_time_help": "仅用于寻找勾协：记录本次发现勾协的时间。(上方的上次登录时间:仅用于协战任务)",
   "fail_notify_enable": "挑战失败推送",
-  "area_boss_fail_notify_help": "地鬼挑战失败时推送通知"
+  "area_boss_fail_notify_help": "地鬼挑战失败时推送通知",
+  "TongXinTeam": "同心队",
+  "tong_xin_team": "同心队",
+  "tx_team_config": "同心队配置",
+  "enable_yc": "运行前先一键预存",
+  "enable_yc_help": "进入同心队后先打开预存页，点“一键预存”并确认，再开始集结",
+  "limit_count": "最多挑战次数",
+  "limit_count_help": "本次运行最多完成多少轮集结开战，达到后结束任务",
+  "member_number": "集结队友数量",
+  "member_number_help": "集结时勾选的离线队友数量，可选 1 名或 2 名",
+  "yc_times": "一键预存次数",
+  "yc_times_help": "进入预存页后点几次「一键预存」，只点 1 次存不满，默认 2 次",
+  "only_yc": "只预存不战斗",
+  "only_yc_help": "只做一键预存，不集结、不创建队伍、不战斗；开启后「运行前先一键预存」自动生效"
 }

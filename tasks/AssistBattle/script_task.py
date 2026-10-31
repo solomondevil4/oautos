@@ -548,18 +548,18 @@ class ScriptTask(
                 return self.FIND_JADE_UNKNOWN
 
         # 页面刚打开时槽位图片可能还没渲染完（页面框架先出、任务图后加载），
+        # 必须连续两帧判定一致才采信
         prev = None
         invited = False
         for _ in range(10):
-            invited = (
+            invited = bool(
                 self.appear(WantedQuestsAssets.I_WQ_INVITE_1)
                 or self.appear(WantedQuestsAssets.I_WQ_INVITE_2)
                 or self.appear(WantedQuestsAssets.I_WQ_INVITE_3)
             )
-            current = bool(invited)
-            if prev is not None and current == prev:
+            if prev is not None and invited == prev:
                 break
-            prev = current
+            prev = invited
             sleep(0.5)
             self.screenshot()
 

@@ -42,8 +42,8 @@ class MysteryShopAssets:
 	I_ME_ENTER = RuleImage(roi_front=(52,494,59,44), roi_back=(52,494,59,44), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_me_enter.png")
 	# 点击分享 
 	I_MS_SHARE = RuleImage(roi_front=(24,571,100,100), roi_back=(24,571,100,100), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_share.png")
-	# 上一个 
-	I_MS_BEFORE = RuleImage(roi_front=(25,317,39,52), roi_back=(25,317,39,52), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_before.png")
+	# 上一家商店（左侧白色左箭头）。自己的商店没有这个箭头，所以「找不到它」就是第一家的判据。素材 42×56 按 16416 实机标定：好友店 1.0000、自己的店最高 0.3673，阈值 0.7 两头余量都很大（旧素材只有 0.8792/0.4524） 
+	I_MS_BEFORE = RuleImage(roi_front=(22,313,42,56), roi_back=(22,313,42,56), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_before.png")
 	# 下一个 
 	I_MS_NEXT = RuleImage(roi_front=(1226,315,36,53), roi_back=(1226,315,36,53), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_next.png")
 	# 分享 
@@ -74,6 +74,12 @@ class MysteryShopAssets:
 	I_MS_NO_COIN = RuleImage(roi_front=(487,139,291,69), roi_back=(467,119,331,109), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_no_coin.png")
 	# 刷新按钮下方的「5(仅1次)」价格标签（出现=本日还能花5勾玉刷新一次） 
 	I_MS_REFRESH_5 = RuleImage(roi_front=(1176,592,91,27), roi_back=(1150,578,180,55), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_refresh_5.png")
+	# 「剩余购买次数」这行字（不含冒号和数字）。商品列表滚动后格子坐标会变，所以不能用固定 8 格的 OCR 区域，改为用本模板 match_all 全屏定位每一格的标签行，再读它右边的数字。售罄格的文字会整体变暗，但归一化相关不受影响（实测仍 0.99），可买/售罄/空位三种状态都能区分：有匹配=有商品，数字>0=可买，数字<=0 或读不到数字=售罄，无匹配=空位 
+	I_MS_LEFTCOUNT = RuleImage(roi_front=(165,79,140,23), roi_back=(130,30,1020,620), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_leftcount.png")
+	# 购买确认框里的勾玉确认键（49x45），点它才真正花勾玉买。**确认键位置会随弹窗布局变**：无数量调节的确认框（如四星奉为达摩）在 (591,498)，带「- 1 +」数量调节的（如神秘的符咒）被推低 44px 到 (599,542)，所以 roiBack 不能贴着某一种布局裁，给 400,370,480,340 覆盖弹窗下半整块。框没弹出时这块露出的是商品卡，卡上同一个勾玉价格图标也会命中但只有 0.7493，正样本 0.9717~0.9791，阈值 0.85 两边余量都够（140 张负样本误命中 0）。命中即确认「购买确认框已开」，点完才出「获得奖励」或「勾玉不足」；识别不到仍退回盲点 C_BUY_ONE 
+	I_MS_JADE_BUY = RuleImage(roi_front=(591,498,49,45), roi_back=(400,370,480,340), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_jade_buy.png")
+	# 购买确认框数量行最右侧的「最大」圆按钮（72x72，深棕底 + 两个向上箭头），点它把数量直接拉到这次能买的上限（剩 3 次就一次买 3 份）。**只有部分道具的确认框才有这个按钮**（神秘咒符、八岐大蛇鳞片这类带「- 1 +」数量调节的才有；不带数量调节的确认框连这个按钮都不渲染），所以它是「有就点、没有就按数量 1 点勾玉」的可选步骤。位置同样会随弹窗布局上下动：截图标定 (748,431)，八岐大蛇鳞片那张实机确认框在 (748,445)，差 14px，roiBack 给 636,376,232,144 覆盖整条数量行右侧。分数：本素材原图 1.0000、另一张同款确认框 1.0000、实机 05_dialog 0.9741；133 张负样本最高 0.7309（同一屏里的「+」按钮 0.6216、「-」按钮 0.6397、勾玉确认键 0.2559），阈值 0.85 两头余量都在 0.12 以上 
+	I_MS_MAX_BUY = RuleImage(roi_front=(748,431,72,72), roi_back=(636,376,232,144), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_max.png")
 
 
 	# Ocr Rule Assets
@@ -99,6 +105,14 @@ class MysteryShopAssets:
 	O_MS_LEFT_7 = RuleOcr(roi=(616,326,204,36), area=(616,326,204,36), mode="Single", method="Default", keyword="", name="ms_left_7")
 	# 第 8 格剩余购买次数 
 	O_MS_LEFT_8 = RuleOcr(roi=(841,326,204,36), area=(841,326,204,36), mode="Single", method="Default", keyword="", name="ms_left_8")
+	# 黑碎价格数字：锚点（I_MS_HEISUI 命中框左下角，即 y+模板高）+56,+45，尺寸 44×30。左边界必须躲开价格牌左侧的勾玉图标（相对左下角停在 +51 左右），右边界必须躲开牌尾装饰（+117 起），否则会把图标/装饰读成数字。运行时按命中位置重设 roi 
+	O_MS_PRICE = RuleOcr(roi=(256,523,44,30), area=(256,523,44,30), mode="Digit", method="Default", keyword="", name="ms_price")
+	# 黑碎数量角标：锚点（I_MS_HEISUI 命中框左下角）+68,−32（负数表示在底边上方），尺寸 36×34。只有 1 片时没有角标，按 1 片算。运行时按命中位置重设 roi 
+	O_MS_QTY = RuleOcr(roi=(268,446,36,34), area=(268,446,36,34), mode="Digit", method="Default", keyword="", name="ms_qty")
+	# 购买确认框里「- 1 +」数量调节器中间那个数字。位置 = 勾玉确认键命中框左上角 + (−11,−92)。带数量调节的确认框（神秘咒符这种能一次买多张的）读得到，实测 0.9781~0.9901；不带调节器的确认框（四星奉为达摩那种）这个位置是道具说明文字，分数只有 0.5756，低于 OCR_MIN_SCORE 0.6，按「数量 1」处理 
+	O_MS_DLG_QTY = RuleOcr(roi=(588,450,36,34), area=(588,450,36,34), mode="Digit", method="Default", keyword="", name="ms_dlg_qty")
+	# 购买确认框底部价格按钮里的总价数字。位置 = 勾玉确认键命中框左上角 + (+46,+8)。50×34 比货架价签的 44×30 宽，因为这里要容纳三位数（实测「450」0.9980，「90」0.9950）。注意这是**这一单的总价**，不是单价：数量 1 时两者相同，数量 >1 要除以数量才是单价 
+	O_MS_DLG_PRICE = RuleOcr(roi=(645,550,50,34), area=(645,550,50,34), mode="Digit", method="Default", keyword="", name="ms_dlg_price")
 
 
 	# Swipe Rule Assets
@@ -110,13 +124,13 @@ class MysteryShopAssets:
 
 	# Image Rule Assets
 	# 蓝票 
-	I_MS_BLUE = RuleImage(roi_front=(850,379,117,98), roi_back=(179,81,829,471), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_blue.png")
+	I_MS_BLUE = RuleImage(roi_front=(850,379,117,98), roi_back=(132,63,908,538), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_blue.png")
 	# 黑蛋 
-	I_MS_BLACK = RuleImage(roi_front=(851,353,114,102), roi_back=(170,64,850,448), threshold=0.6, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_black.png")
-	# description 
-	I_MS_TAIKO_3 = RuleImage(roi_front=(176,353,140,104), roi_back=(144,50,866,494), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_taiko_3.png")
-	# description 
-	I_MS_TAIKO_4 = RuleImage(roi_front=(204,372,90,88), roi_back=(156,81,874,473), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_taiko_4.png")
+	I_MS_BLACK = RuleImage(roi_front=(851,353,114,102), roi_back=(132,63,908,538), threshold=0.6, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_black.png")
+	# 三星太鼓：66×57 图标本体（含右下角 999 角标，实测这是常驻的库存显示，不是售罄标记）。位置不固定，roiBack 用整屏。分数：5 张有三星的真机图 0.9805~0.9830，另 62 张无三星图最高 0.5397（含四星格 0.73 以下）。0.9 两头余量 0.08/0.36。低于四星是因为三星模板对四星格几乎不命中，反之四星模板对三星格 0.7304 → 四星阈值必须 0.85 以上。 
+	I_MS_TAIKO_3 = RuleImage(roi_front=(652,422,66,57), roi_back=(0,0,1280,720), threshold=0.9, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_taiko_3.png")
+	# 四星太鼓：66×57 图标本体（紫底，和三星同为饼状物，只能靠底色/光效分）。位置不固定，roiBack 用整屏。分数：正样本 0.9782，三星格误命中 0.7294~0.7309 → 0.85 两头余量 0.13/0.12。 
+	I_MS_TAIKO_4 = RuleImage(roi_front=(426,419,66,57), roi_back=(0,0,1280,720), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_taiko_4.png")
 	# description 
 	I_MS_TAIKO_6 = RuleImage(roi_front=(0,0,100,100), roi_back=(0,0,100,100), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_taiko_6.png")
 	# description 
@@ -139,5 +153,13 @@ class MysteryShopAssets:
 	I_MS_REWARD_5 = RuleImage(roi_front=(682,632,48,42), roi_back=(682,632,48,42), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_reward_5.png")
 	# description 
 	I_MS_REWARD_10 = RuleImage(roi_front=(851,637,47,32), roi_back=(851,637,47,32), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_reward_10.png")
+	# 御行达摩碎片（黑碎）的达摩脸左下块 40×40（含橙色左边框），在货架区内全量搜索以拿到每一片的位置。阈值 0.7 是按图像服务分数标定的：实测正样本 0.820~0.828，其他 7 格干扰最高 0.440，0.85 在服务上根本达不到（会一片都找不到）。注意这块**包含**卡片左下角（碎片的斜切/整只的直角都在里面），但 40×40 里约 5/6 是两种卡共用的达摩脸，斜切只占一小块被摊薄 —— 实测碎片 0.99、整只仍有 0.87，所以只能定位、不能分身份；分身份由 script_task._corner_template 从这块里再切出左下角 30×30 来判（不另存素材） 
+	I_MS_HEISUI = RuleImage(roi_front=(200,438,40,40), roi_back=(132,63,908,538), threshold=0.7, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_heisui.png")
+	# 神秘咒符（蓝票）商品格里那个 62×59 的图标本体，在货架区内全量搜索、逐个读价后按上限买。为什么不沿用 ms_blue(117×98)：那块是整个卡片，带紫色边框和「特惠」角标，同一个图标只会在有特惠时才对得上，而且对别的卡片到处误命中（18 张截图 match_all 一次能出 11~16 个 ≥0.7 的假点，最高真命中 0.88、假命中 0.84 只差 0.04）。只截图标本体后：有蓝票的截图 19 张最高 0.9821、最低 0.8506（被「勾玉不足」弹窗遮住一半那张），没有蓝票的 50 张最高只有 0.5590（获得奖励弹窗），阈值 0.8 两边余量 0.05 / 0.24。roiBack 给 0,0,1280,720（整屏）：蓝票会出现在任意商品格，实测 10 张真机图里图标左上角落在 x 425~875、y 155~418（含模板高后 y 到 477），跨 8 格中的 4 个位置，只框一格必漏；扩到整屏后同一批 105 张负样本最高分仍是 0.5590、正样本最低仍是 0.8506，与 132,63,908,538 完全一致（整屏多出来的区域没有任何假命中） 
+	I_MS_BLUE_ICON = RuleImage(roi_front=(425,418,62,59), roi_back=(0,0,1280,720), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_blue_icon.png")
+	# 「勾玉不足，是否前往购买勾玉？」弹窗里的『勾玉不足』四个字（114×34）。**只截文字、不截按钮**：这个弹窗的取消按钮和普通确认框（刷新商店那个）位置尺寸完全一样，按钮分不开两者，按钮一错就把正常刷新给取消了。实测正样本 1.0000、另一版弹窗 0.3554、33 张正常商店截图/其它弹窗最高 0.2393，阈值 0.8 余量很大。roiBack 给 140,150,1000,420（覆盖整个弹窗区，不是紧贴文字）：两版弹窗面板本身位置能差 30px（403 vs 433），紧贴文字的窗口纵向只剩 12px 余量，弹窗一浮动就漏；放大到整块后负样本最高只涨到 0.2393，阈值 0.8 仍安全 
+	I_MS_JADE_SHORT = RuleImage(roi_front=(457,299,114,34), roi_back=(140,150,1000,420), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_jade_short.png")
+	# 「勾玉不足，是否前往商城？」弹窗里的『勾玉不足』四个字（132×38）。**和 ms_jade_short 是两个不同的弹窗控件**：这版字高 28px、那版 24px，差 1.17 倍，同一份模板对另一版只能到 0.36，所以必须各存一份、两个都要测。实测正样本 1.0000、另一版 0.3660、33 张正常商店截图/其它弹窗最高 0.2494。roiBack 同样给 140,150,1000,420（理由见 ms_jade_short） 
+	I_MS_JADE_SHORT_SAMLL = RuleImage(roi_front=(457,297,132,38), roi_back=(140,150,1000,420), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_jade_short_samll.png")
 
 

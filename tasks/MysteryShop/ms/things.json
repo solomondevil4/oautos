@@ -1,0 +1,173 @@
+[
+  {
+    "itemName": "ms_blue",
+    "imageName": "ms_ms_blue.png",
+    "roiFront": "850,379,117,98",
+    "roiBack": "132,63,908,538",
+    "method": "Template matching",
+    "threshold": 0.7,
+    "description": "蓝票"
+  },
+  {
+    "itemName": "ms_black",
+    "imageName": "ms_ms_black.png",
+    "roiFront": "851,353,114,102",
+    "roiBack": "132,63,908,538",
+    "method": "Template matching",
+    "threshold": 0.6,
+    "description": "黑蛋"
+  },
+  {
+    "itemName": "ms_taiko_3",
+    "imageName": "ms_ms_taiko_3.png",
+    "roiFront": "652,422,66,57",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.9,
+    "description": "三星太鼓：66×57 图标本体（含右下角 999 角标，实测这是常驻的库存显示，不是售罄标记）。位置不固定，roiBack 用整屏。分数：5 张有三星的真机图 0.9805~0.9830，另 62 张无三星图最高 0.5397（含四星格 0.73 以下）。0.9 两头余量 0.08/0.36。低于四星是因为三星模板对四星格几乎不命中，反之四星模板对三星格 0.7304 → 四星阈值必须 0.85 以上。"
+  },
+  {
+    "itemName": "ms_taiko_4",
+    "imageName": "ms_ms_taiko_4.png",
+    "roiFront": "426,419,66,57",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.85,
+    "description": "四星太鼓：66×57 图标本体（紫底，和三星同为饼状物，只能靠底色/光效分）。位置不固定，roiBack 用整屏。分数：正样本 0.9782，三星格误命中 0.7294~0.7309 → 0.85 两头余量 0.13/0.12。"
+  },
+  {
+    "itemName": "ms_taiko_6",
+    "imageName": "ms_ms_taiko_6.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,100,100",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_exp",
+    "imageName": "ms_ms_exp.png",
+    "roiFront": "0,0,100,100",
+    "roiBack": "0,0,100,100",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_blue",
+    "imageName": "ms_ms_check_blue.png",
+    "roiFront": "592,241,88,94",
+    "roiBack": "455,235,261,146",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_black",
+    "imageName": "ms_ms_check_black.png",
+    "roiFront": "598,258,86,92",
+    "roiBack": "455,238,273,123",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_taiko_3",
+    "imageName": "ms_ms_check_taiko_3.png",
+    "roiFront": "567,259,70,81",
+    "roiBack": "465,245,252,124",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_taiko_4",
+    "imageName": "ms_ms_check_taiko_4.png",
+    "roiFront": "591,277,66,73",
+    "roiBack": "453,235,280,146",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_taiko_6",
+    "imageName": "ms_ms_check_taiko_6.png",
+    "roiFront": "580,253,100,100",
+    "roiBack": "430,220,334,171",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_check_exp",
+    "imageName": "ms_ms_check_exp.png",
+    "roiFront": "589,255,100,100",
+    "roiBack": "472,225,243,149",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_reward_3",
+    "imageName": "ms_ms_reward_3.png",
+    "roiFront": "511,630,48,47",
+    "roiBack": "511,630,48,47",
+    "method": "Template matching",
+    "threshold": 0.7,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_reward_5",
+    "imageName": "ms_ms_reward_5.png",
+    "roiFront": "682,632,48,42",
+    "roiBack": "682,632,48,42",
+    "method": "Template matching",
+    "threshold": 0.7,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_reward_10",
+    "imageName": "ms_ms_reward_10.png",
+    "roiFront": "851,637,47,32",
+    "roiBack": "851,637,47,32",
+    "method": "Template matching",
+    "threshold": 0.7,
+    "description": "description"
+  },
+  {
+    "itemName": "ms_heisui",
+    "imageName": "ms_ms_heisui.png",
+    "roiFront": "200,438,40,40",
+    "roiBack": "132,63,908,538",
+    "method": "Template matching",
+    "threshold": 0.7,
+    "description": "御行达摩碎片（黑碎）的达摩脸左下块 40×40（含橙色左边框），在货架区内全量搜索以拿到每一片的位置。阈值 0.7 是按图像服务分数标定的：实测正样本 0.820~0.828，其他 7 格干扰最高 0.440，0.85 在服务上根本达不到（会一片都找不到）。注意这块**包含**卡片左下角（碎片的斜切/整只的直角都在里面），但 40×40 里约 5/6 是两种卡共用的达摩脸，斜切只占一小块被摊薄 —— 实测碎片 0.99、整只仍有 0.87，所以只能定位、不能分身份；分身份由 script_task._corner_template 从这块里再切出左下角 30×30 来判（不另存素材）"
+  },
+  {
+    "itemName": "ms_blue_icon",
+    "imageName": "ms_ms_blue_icon.png",
+    "roiFront": "425,418,62,59",
+    "roiBack": "0,0,1280,720",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "神秘咒符（蓝票）商品格里那个 62×59 的图标本体，在货架区内全量搜索、逐个读价后按上限买。为什么不沿用 ms_blue(117×98)：那块是整个卡片，带紫色边框和「特惠」角标，同一个图标只会在有特惠时才对得上，而且对别的卡片到处误命中（18 张截图 match_all 一次能出 11~16 个 ≥0.7 的假点，最高真命中 0.88、假命中 0.84 只差 0.04）。只截图标本体后：有蓝票的截图 19 张最高 0.9821、最低 0.8506（被「勾玉不足」弹窗遮住一半那张），没有蓝票的 50 张最高只有 0.5590（获得奖励弹窗），阈值 0.8 两边余量 0.05 / 0.24。roiBack 给 0,0,1280,720（整屏）：蓝票会出现在任意商品格，实测 10 张真机图里图标左上角落在 x 425~875、y 155~418（含模板高后 y 到 477），跨 8 格中的 4 个位置，只框一格必漏；扩到整屏后同一批 105 张负样本最高分仍是 0.5590、正样本最低仍是 0.8506，与 132,63,908,538 完全一致（整屏多出来的区域没有任何假命中）"
+  },
+  {
+    "itemName": "ms_jade_short",
+    "imageName": "ms_ms_jade_short.png",
+    "roiFront": "457,299,114,34",
+    "roiBack": "140,150,1000,420",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "「勾玉不足，是否前往购买勾玉？」弹窗里的『勾玉不足』四个字（114×34）。**只截文字、不截按钮**：这个弹窗的取消按钮和普通确认框（刷新商店那个）位置尺寸完全一样，按钮分不开两者，按钮一错就把正常刷新给取消了。实测正样本 1.0000、另一版弹窗 0.3554、33 张正常商店截图/其它弹窗最高 0.2393，阈值 0.8 余量很大。roiBack 给 140,150,1000,420（覆盖整个弹窗区，不是紧贴文字）：两版弹窗面板本身位置能差 30px（403 vs 433），紧贴文字的窗口纵向只剩 12px 余量，弹窗一浮动就漏；放大到整块后负样本最高只涨到 0.2393，阈值 0.8 仍安全"
+  },
+  {
+    "itemName": "ms_jade_short_samll",
+    "imageName": "ms_ms_jade_short_samll.png",
+    "roiFront": "457,297,132,38",
+    "roiBack": "140,150,1000,420",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "「勾玉不足，是否前往商城？」弹窗里的『勾玉不足』四个字（132×38）。**和 ms_jade_short 是两个不同的弹窗控件**：这版字高 28px、那版 24px，差 1.17 倍，同一份模板对另一版只能到 0.36，所以必须各存一份、两个都要测。实测正样本 1.0000、另一版 0.3660、33 张正常商店截图/其它弹窗最高 0.2494。roiBack 同样给 140,150,1000,420（理由见 ms_jade_short）"
+  }
+]
