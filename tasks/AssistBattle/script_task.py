@@ -40,6 +40,8 @@ class ScriptTask(
     # 日常类功能的时间窗口, 开关关闭时不限
     DAILY_START = time(18, 0)
     DAILY_END = time(23, 0)
+    # 本号是否打觉醒, 由 run_one_account 在切号前设置; True 表示跟随全局开关
+    current_evozone_enable = True
 
     def run(self):
         self.conf = self.config.model.assist_battle
@@ -50,6 +52,28 @@ class ScriptTask(
             self.run_push_result(results)
         self.set_next_run(task='AssistBattle', success=True, finish=True)
         raise TaskEnd('AssistBattle')
+
+    def evozone_enabled(self, account=None) -> bool:
+        """本号是否要打觉醒: 全局总开关 AND 该号自己的勾选
+
+        传 account 时按账号现算(切号前、推送、跳过判定都用这个);
+        不传时用 run_one_account 为本号设好的值, 供 run_current_account 内部使用。
+        """
+        if not self.conf.battle_config.evozone_enable:
+            return False
+        if account is None:
+            return bool(self.current_evozone_enable)
+        return bool(getattr(account, 'evozone_enable', True))
+
+    def daily_gate_open(self, start_evozone: int) -> bool:
+        """日常任务的放行条件
+
+        上游逻辑是「本号觉醒协战剩余 0 次(今天已打完)就不再跑日常」, 用来防止重复执行。
+        本号不打觉醒时这个前提不成立, 直接放行, 保证关掉觉醒不影响其它任务。
+        """
+        if not self.evozone_enabled():
+            return True
+        return start_evozone > 0
 
     def in_daily_window(self) -> bool:
         """日常类功能(邮件/寄售屋/庭院/商店签到)只在晚上执行, 白天那一轮只跑勾协"""
@@ -70,9 +94,15 @@ class ScriptTask(
         return f'{account}-{platform}-{svr:　>4}-{character}'
 
     def is_assist_count_normal(self, result) -> bool:
-        """协战次数是否正常: 觉醒打满 15 次、结界突破打满 3 次"""
+        """协战次数是否正常: 觉醒打满 15 次、结界突破打满 3 次
+
+        觉醒次数按该号自己的勾选判断, 没勾觉醒的号不参与这条检查。
+        """
         cfg = self.conf.battle_config
-        if cfg.evozone_enable and result['evozone_final'] < self.EVOZONE_TOTAL:
+        if (
+            result.get('evozone_enable', True)
+            and result['evozone_final'] < self.EVOZONE_TOTAL
+        ):
             return False
         if cfg.realmraid_enable and result['realmraid_final'] < self.REALMRAID_TOTAL:
             return False
@@ -81,7 +111,7 @@ class ScriptTask(
     def format_assist_count(self, result) -> str:
         """拼接今日累计的协战次数"""
         message = ''
-        if self.conf.battle_config.evozone_enable:
+        if result.get('evozone_enable', False):
             message += f"-觉醒{result['evozone_final']}次"
         if self.conf.battle_config.realmraid_enable:
             message += f"-个突{result['realmraid_final']}次"
@@ -91,7 +121,7 @@ class ScriptTask(
         """本次执行明细的后缀: 协战次数 → 勾协 → 寄售券余额, 每一项都由各自的开关控制"""
         message = ''
         if self.conf.push_config.executed_count_enable:
-            if self.conf.battle_config.evozone_enable:
+            if result.get('evozone_enable', False):
                 message += f"-觉醒{result['evozone_done']}次"
             if self.conf.battle_config.realmraid_enable:
                 message += f"-个突{result['realmraid_done']}次"
@@ -224,15 +254,21 @@ class ScriptTask(
                 account.svr,
             )
             return False
-        (
-            evozone_done,
-            realmraid_done,
-            evozone_final,
-            realmraid_final,
-            jade_flag,
-            jade_checked,
-            consignment_ticket,
-        ) = self.run_current_account()
+        # 本号是否打觉醒: 只改内存里的运行期标记, 不动配置也不落盘, 跑完恢复
+        target_evozone = self.evozone_enabled(account)
+        self.current_evozone_enable = target_evozone
+        try:
+            (
+                evozone_done,
+                realmraid_done,
+                evozone_final,
+                realmraid_final,
+                jade_flag,
+                jade_checked,
+                consignment_ticket,
+            ) = self.run_current_account()
+        finally:
+            self.current_evozone_enable = True
         self.mark_account_done(
             account, evozone_final, realmraid_final, jade_checked, jade_flag
         )
@@ -242,6 +278,7 @@ class ScriptTask(
                 'character': account.character,
                 'svr': account.svr,
                 'apple_or_android': account.apple_or_android,
+                'evozone_enable': target_evozone,
                 'evozone_done': evozone_done,
                 'realmraid_done': realmraid_done,
                 'evozone_final': evozone_final,
@@ -256,15 +293,17 @@ class ScriptTask(
     def append_skipped_result(self, account, results) -> None:
         """当天已完成的账号不登录确认, 按当前开启的协战类型推算结果计入总进度"""
         cfg = self.conf.battle_config
+        evozone_on = self.evozone_enabled(account)
         results.append(
             {
                 'account': account.account,
                 'character': account.character,
                 'svr': account.svr,
                 'apple_or_android': account.apple_or_android,
+                'evozone_enable': evozone_on,
                 'evozone_done': 0,
                 'realmraid_done': 0,
-                'evozone_final': self.EVOZONE_TOTAL if cfg.evozone_enable else 0,
+                'evozone_final': self.EVOZONE_TOTAL if evozone_on else 0,
                 'realmraid_final': self.REALMRAID_TOTAL if cfg.realmraid_enable else 0,
                 # 跳过的账号读上次记录的勾协状态(中断恢复也靠它)
                 'jade_flag': self._skipped_jade_flag(account),
@@ -290,7 +329,7 @@ class ScriptTask(
         if not self.conf.optimize_config.skip_completed_account_enable:
             return False
         battle_enabled = (
-            self.conf.battle_config.evozone_enable
+            self.evozone_enabled(account)
             or self.conf.battle_config.realmraid_enable
         )
         jade_enabled = self.conf.daily_config.find_jade_enable
@@ -337,9 +376,11 @@ class ScriptTask(
         jade_enable = self.conf.daily_config.find_jade_enable
         if not self.conf.optimize_config.skip_completed_account_enable:
             return
+        # 觉醒按本号自己的勾选算, 没勾觉醒的号不能因为觉醒次数不满而判成"没完成"
+        evozone_on = self.evozone_enabled(account)
         battle_all_done = (
-            (battle.evozone_enable or battle.realmraid_enable)
-            and (evozone_final >= self.EVOZONE_TOTAL or not battle.evozone_enable)
+            (evozone_on or battle.realmraid_enable)
+            and (evozone_final >= self.EVOZONE_TOTAL or not evozone_on)
             and (realmraid_final >= self.REALMRAID_TOTAL or not battle.realmraid_enable)
         )
         jade_done = jade_enable and jade_checked
@@ -384,11 +425,9 @@ class ScriptTask(
         consignment_ticket = None
         # 不执行协战任务时，可以用来小号挂日常
         start_evozone = 1
+        start_realmraid = 1
 
-        if (
-            self.conf.battle_config.evozone_enable
-            or self.conf.battle_config.realmraid_enable
-        ):
+        if self.evozone_enabled() or self.conf.battle_config.realmraid_enable:
             start_evozone, start_realmraid = self.get_assist_battle_count()
 
         # 邮件领取
@@ -441,7 +480,9 @@ class ScriptTask(
                 ) = backup
 
         # 结界寄养
-        if self.conf.daily_config.kekkaiutilize_enable and start_evozone > 0:
+        if self.conf.daily_config.kekkaiutilize_enable and self.daily_gate_open(
+            start_evozone
+        ):
             # 进入寮结界
             self.goto_page(page_guild_realm)
             self.check_utilize_add()
@@ -450,7 +491,7 @@ class ScriptTask(
         # 庭院事务
         if (
             self.conf.daily_config.courtyard_affairs_enable
-            and start_evozone > 0
+            and self.daily_gate_open(start_evozone)
             and self.daily_window
         ):
             self.run_courtyard_affairs()
@@ -459,7 +500,7 @@ class ScriptTask(
         # 商店签到
         if (
             self.conf.daily_config.store_sign_enable
-            and start_evozone > 0
+            and self.daily_gate_open(start_evozone)
             and self.daily_window
         ):
             # 重置done状态
@@ -481,7 +522,7 @@ class ScriptTask(
             jade_checked = jade_flag != self.FIND_JADE_UNKNOWN
 
         # 执行觉醒副本任务
-        if self.conf.battle_config.evozone_enable and start_evozone > 0:
+        if self.evozone_enabled() and start_evozone > 0:
             self.run_evozone(start_evozone)
             self.goto_page(page_main)
 
@@ -491,17 +532,14 @@ class ScriptTask(
             self.goto_page(page_main)
 
         # 统计本次执行完成的协战任务
-        if (
-            self.conf.battle_config.evozone_enable
-            or self.conf.battle_config.realmraid_enable
-        ):
+        if self.evozone_enabled() or self.conf.battle_config.realmraid_enable:
             end_evozone, end_realmraid = self.get_assist_battle_count()
             evozone_done = start_evozone - end_evozone
             realmraid_done = start_realmraid - end_realmraid
             # 今天已经完成的任务
             evozone_final = self.EVOZONE_TOTAL - end_evozone
             realmraid_final = self.REALMRAID_TOTAL - end_realmraid
-            if self.conf.battle_config.evozone_enable:
+            if self.evozone_enabled():
                 logger.info(
                     "本次协战完成：觉醒 %s 次，结界突破 %s 次",
                     evozone_done,

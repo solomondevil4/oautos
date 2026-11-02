@@ -18,8 +18,16 @@ from tasks.RichMan.mall.shikigami_map import SHIKIGAMI_NAMES
 
 
 class AssistBattleAccountInfo(AccountInfo):
-    """一键协战的账号: 额外的勾协字段, 供跳过判定与推送使用"""
+    """一键协战的账号: 额外的协战/勾协字段, 供跳过判定与推送使用"""
 
+    # 本号是否打觉醒副本: 与全局的「启用觉醒副本」是"与"关系, 关掉只跳过觉醒,
+    # 邮件/寄售屋/庭院/签到/结界突破/勾协等其它任务照常执行
+    evozone_enable: bool = Field(
+        default=True,
+        title='打觉醒',
+        description='本号是否打觉醒副本（固定雷麒麟5层），需同时打开任务设置里的总开关；'
+        '关掉只跳过觉醒，其它任务照常',
+    )
     # 勾协检查结果: 从未执行是 none, 执行过是无勾/普勾/现勾; 内部状态, 不在 oasx 显示
     jade_status: str = Field(default='none', description='jade_status_help')
     # 协战过程中发现勾协的时间(5/18 点刷新), 与协战的 last_complete_time 分开记
@@ -92,7 +100,7 @@ class AssistBattleBattleConfig(BaseModel):
     )
     evozone_enable: bool = Field(
         default=False,
-        description='默认雷麒麟5层',
+        description='总开关，默认雷麒麟5层；每个账号还要在账号列表里单独勾选「打觉醒」',
     )
     realmraid_enable: bool = Field(default=True, description='默认锁定阵容')
     realmraid_easy_enable: bool = Field(
