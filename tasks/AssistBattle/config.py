@@ -179,7 +179,7 @@ class AssistBattleOptimizeConfig(BaseModel):
 
 class AssistBattle(ConfigBase):
     scheduler: Scheduler = Field(default_factory=Scheduler)
-    battle_config: AssistBattleBattleConfig = Field(
+    assist_battle_config: AssistBattleBattleConfig = Field(
         default_factory=AssistBattleBattleConfig
     )
     daily_config: AssistBattleDailyConfig = Field(
@@ -194,7 +194,10 @@ class AssistBattle(ConfigBase):
     @model_validator(mode='before')
     @classmethod
     def validator_account_list(cls, value: dict) -> Any:
-        account_count = value.get('battle_config', {}).get('account_count', 1)
+        # 旧配置里的 battle_config 迁移到 assist_battle_config(改名兼容)
+        if 'battle_config' in value:
+            value.setdefault('assist_battle_config', value.pop('battle_config'))
+        account_count = value.get('assist_battle_config', {}).get('account_count', 1)
         account_list = value.setdefault('account_list', [])
 
         remove_keys = []

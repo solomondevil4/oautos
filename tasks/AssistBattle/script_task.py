@@ -59,7 +59,7 @@ class ScriptTask(
         传 account 时按账号现算(切号前、推送、跳过判定都用这个);
         不传时用 run_one_account 为本号设好的值, 供 run_current_account 内部使用。
         """
-        if not self.conf.battle_config.evozone_enable:
+        if not self.conf.assist_battle_config.evozone_enable:
             return False
         if account is None:
             return bool(self.current_evozone_enable)
@@ -98,7 +98,7 @@ class ScriptTask(
 
         觉醒次数按该号自己的勾选判断, 没勾觉醒的号不参与这条检查。
         """
-        cfg = self.conf.battle_config
+        cfg = self.conf.assist_battle_config
         if (
             result.get('evozone_enable', True)
             and result['evozone_final'] < self.EVOZONE_TOTAL
@@ -113,7 +113,7 @@ class ScriptTask(
         message = ''
         if result.get('evozone_enable', False):
             message += f"-觉醒{result['evozone_final']}次"
-        if self.conf.battle_config.realmraid_enable:
+        if self.conf.assist_battle_config.realmraid_enable:
             message += f"-个突{result['realmraid_final']}次"
         return message
 
@@ -123,11 +123,11 @@ class ScriptTask(
         if self.conf.push_config.executed_count_enable:
             if result.get('evozone_enable', False):
                 message += f"-觉醒{result['evozone_done']}次"
-            if self.conf.battle_config.realmraid_enable:
+            if self.conf.assist_battle_config.realmraid_enable:
                 message += f"-个突{result['realmraid_done']}次"
         if self.conf.daily_config.find_jade_enable:
             message += f"-{result['jade_flag']}"
-        # 寄售券余额跟在勾协后面; 当天没买或没读到券数就不显示这一项
+        # 寄售券余额跟在勾协后面; 没买或没读到券数就不显示
         ticket = result.get('consignment_ticket')
         if self.conf.push_config.consignment_ticket_enable and ticket is not None:
             message += f"-寄售券{ticket}"
@@ -144,9 +144,12 @@ class ScriptTask(
         lines = []
         has_content = False
         for result in executed:
+            # 买了寄售券的账号必须完整推送, 不受勾协状态与"仅存在勾协推送"影响
+            bought_consignment = result.get('consignment_ticket') is not None
             # 开启"仅存在勾协推送"时, 没有勾协的账号整行都不列
             if (
-                self.conf.push_config.find_jade_push_clear_enable
+                not bought_consignment
+                and self.conf.push_config.find_jade_push_clear_enable
                 and result['jade_flag'] == self.FIND_JADE_NONE
             ):
                 continue
@@ -157,6 +160,29 @@ class ScriptTask(
             lines.append(self.format_account_name(result, '**') + suffix)
         if not has_content:
             return []
+        return lines
+
+    def format_resumed_jade_results(self, results):
+        """断点续跑时, 把之前已记录、本次被跳过的账号的勾协结果一并列出
+
+        只跑勾协时没有"今日协战任务"那一段, 跳过的账号本来完全不进推送,
+        中断恢复后就只剩本次执行的那几个号, 前面查到的勾协结果丢了。
+        只列已确认过的状态, "未知"表示上轮没查到, 推出来没有意义。
+        """
+        confirmed = (self.FIND_JADE_NONE, self.FIND_JADE_NORMAL, self.FIND_JADE_SPECIAL)
+        lines = []
+        for result in results:
+            if not result['skipped']:
+                continue
+            flag = result['jade_flag']
+            if flag not in confirmed:
+                continue
+            if (
+                self.conf.push_config.find_jade_push_clear_enable
+                and flag == self.FIND_JADE_NONE
+            ):
+                continue
+            lines.append(self.format_account_name(result, '…') + f"-{flag}")
         return lines
 
     def run_push_result(self, results):
@@ -171,10 +197,18 @@ class ScriptTask(
             for message in executed_lines:
                 logger.info(message)
                 push_content.append(message)
+        # 断点续跑: 补上此前记录过的勾协结果
+        if self.conf.daily_config.find_jade_enable:
+            resumed_lines = self.format_resumed_jade_results(results)
+            if resumed_lines:
+                push_content.append(f"此前已记录勾协（{len(resumed_lines)}个账号）：")
+                for message in resumed_lines:
+                    logger.info(message)
+                    push_content.append(message)
         # 未开启协战则不推送总进度
         if (
-            self.conf.battle_config.evozone_enable
-            or self.conf.battle_config.realmraid_enable
+            self.conf.assist_battle_config.evozone_enable
+            or self.conf.assist_battle_config.realmraid_enable
         ):
             # 次数正常的账号不再逐个列出, 只推送次数不正常的账号和明细
             abnormal = [r for r in results if not self.is_assist_count_normal(r)]
@@ -292,7 +326,7 @@ class ScriptTask(
 
     def append_skipped_result(self, account, results) -> None:
         """当天已完成的账号不登录确认, 按当前开启的协战类型推算结果计入总进度"""
-        cfg = self.conf.battle_config
+        cfg = self.conf.assist_battle_config
         evozone_on = self.evozone_enabled(account)
         results.append(
             {
@@ -330,7 +364,7 @@ class ScriptTask(
             return False
         battle_enabled = (
             self.evozone_enabled(account)
-            or self.conf.battle_config.realmraid_enable
+            or self.conf.assist_battle_config.realmraid_enable
         )
         jade_enabled = self.conf.daily_config.find_jade_enable
         if not (battle_enabled or jade_enabled):
@@ -372,7 +406,7 @@ class ScriptTask(
         jade_flag: str = FIND_JADE_NONE,
     ) -> None:
         """协战、勾协各自记各自的时间戳, 写入前重取当前 model 的账号对象"""
-        battle = self.conf.battle_config
+        battle = self.conf.assist_battle_config
         jade_enable = self.conf.daily_config.find_jade_enable
         if not self.conf.optimize_config.skip_completed_account_enable:
             return
@@ -427,7 +461,7 @@ class ScriptTask(
         start_evozone = 1
         start_realmraid = 1
 
-        if self.evozone_enabled() or self.conf.battle_config.realmraid_enable:
+        if self.evozone_enabled() or self.conf.assist_battle_config.realmraid_enable:
             start_evozone, start_realmraid = self.get_assist_battle_count()
 
         # 邮件领取
@@ -527,12 +561,12 @@ class ScriptTask(
             self.goto_page(page_main)
 
         # 执行结界突破任务
-        if self.conf.battle_config.realmraid_enable and start_realmraid > 0:
+        if self.conf.assist_battle_config.realmraid_enable and start_realmraid > 0:
             self.run_realmraid(start_realmraid)
             self.goto_page(page_main)
 
         # 统计本次执行完成的协战任务
-        if self.evozone_enabled() or self.conf.battle_config.realmraid_enable:
+        if self.evozone_enabled() or self.conf.assist_battle_config.realmraid_enable:
             end_evozone, end_realmraid = self.get_assist_battle_count()
             evozone_done = start_evozone - end_evozone
             realmraid_done = start_realmraid - end_realmraid
@@ -545,7 +579,7 @@ class ScriptTask(
                     evozone_done,
                     realmraid_done,
                 )
-            if self.conf.battle_config.realmraid_enable:
+            if self.conf.assist_battle_config.realmraid_enable:
                 logger.info(
                     "最终协战完成：觉醒 %s 次，结界突破 %s 次",
                     evozone_final,
@@ -728,12 +762,12 @@ class ScriptTask(
         con = self.config.realm_raid
 
         con.raid_config.number_attack = count
-        if self.conf.battle_config.realmraid_easy_enable:
+        if self.conf.assist_battle_config.realmraid_easy_enable:
             con.raid_config.exit_four = False
             con.raid_config.order_attack = '0 > 1 > 2 > 3 > 4 > 5'
         con.general_battle_config.lock_team_enable = True
         con.switch_soul_config.enable = False
-        if self.conf.battle_config.switch_soul_enable:
+        if self.conf.assist_battle_config.switch_soul_enable:
             con.switch_soul_config.enable = True
         self.run_realmraid_core(con)
 
