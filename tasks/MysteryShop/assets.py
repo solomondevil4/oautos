@@ -35,6 +35,8 @@ class MysteryShopAssets:
 	C_MS_CLOSE = RuleClick(roi_front=(938,138,41,35), roi_back=(938,138,41,35), name="ms_close")
 	# 刷新商店按钮（花 5 勾玉刷新一次）
 	C_MS_REFRESH = RuleClick(roi_front=(1203,535,51,46), roi_back=(1203,535,51,46), name="ms_refresh")
+	# 「已达上限」弹窗的确定键（整颗按钮，点击取中心）。绝不点左边那个「七日内不再提醒」——那是永久改游戏设置
+	C_MS_LIMIT_OK = RuleClick(roi_front=(551,403,201,53), roi_back=(551,403,201,53), name="ms_limit_ok")
 
 
 	# Image Rule Assets
@@ -68,8 +70,8 @@ class MysteryShopAssets:
 	I_MS_COIN_7 = RuleImage(roi_front=(647,517,39,39), roi_back=(616,500,200,70), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_coin.png")
 	# 第 8 格价格牌左侧金币图标（判断该格是否为金币道具） 
 	I_MS_COIN_8 = RuleImage(roi_front=(872,517,39,39), roi_back=(841,500,200,70), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_coin.png")
-	# 金币购买按钮图标（购买弹窗内） 
-	I_MS_COIN_BUY = RuleImage(roi_front=(572,530,41,42), roi_back=(558,516,69,70), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_coin_buy.png")
+	# 金币购买按钮图标（购买弹窗内）。搜索区高度必须够 125：普通金币弹窗按钮在 y530，但带「- 1 + / 最大」数量调节的弹窗高一行、按钮下移到 y557；原先 70 高的搜索区（y516~586）装不下 42 高的模板（垂直只能放到 y544），实测搜索区内最高 0.150 —— 弹窗明明开了却判「购买弹窗未出现」，11-04 纸扇剩 2 次那笔就是这么丢的。扩成 y505~630 后：弹窗内 0.952，货架上仍 0.179（无新增误匹配），普通弹窗按钮 y530 照样命中 
+	I_MS_COIN_BUY = RuleImage(roi_front=(572,530,41,42), roi_back=(558,505,69,125), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_coin_buy.png")
 	# 金币不足弹出的「购买金币」窗口标题（出现即表示金币不够，放弃金币购买） 
 	I_MS_NO_COIN = RuleImage(roi_front=(487,139,291,69), roi_back=(467,119,331,109), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_no_coin.png")
 	# 刷新按钮下方的「5(仅1次)」价格标签（出现=本日还能花5勾玉刷新一次） 
@@ -113,6 +115,8 @@ class MysteryShopAssets:
 	O_MS_DLG_QTY = RuleOcr(roi=(588,450,36,34), area=(588,450,36,34), mode="Digit", method="Default", keyword="", name="ms_dlg_qty")
 	# 购买确认框底部价格按钮里的总价数字。位置 = 勾玉确认键命中框左上角 + (+46,+8)。50×34 比货架价签的 44×30 宽，因为这里要容纳三位数（实测「450」0.9980，「90」0.9950）。注意这是**这一单的总价**，不是单价：数量 1 时两者相同，数量 >1 要除以数量才是单价 
 	O_MS_DLG_PRICE = RuleOcr(roi=(645,550,50,34), area=(645,550,50,34), mode="Digit", method="Default", keyword="", name="ms_dlg_price")
+	# 「当前持有的XX数量已达上限，是否继续？」弹窗。只在金币道具路径出现，时机是点完金币购买键之后。用 OCR 认字而不是裁图：第一行带着道具名（樱饼/其它），道具一换模板就废。roi 比文字本身宽一圈，因为道具名长短不同会让折行位置左右挪 
+	O_MS_LIMIT_WARN = RuleOcr(roi=(400,230,480,120), area=(400,230,480,120), mode="Full", method="Default", keyword="已达上限", name="ms_limit_warn")
 
 
 	# Swipe Rule Assets
@@ -137,12 +141,20 @@ class MysteryShopAssets:
 	I_MS_EXP = RuleImage(roi_front=(0,0,100,100), roi_back=(0,0,100,100), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_exp.png")
 	# description 
 	I_MS_CHECK_BLUE = RuleImage(roi_front=(592,241,88,94), roi_back=(455,235,261,146), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_blue.png")
-	# description 
+	# 确认框里的**御行达摩碎片**大图。整只御行达摩目前没有确认框素材，代码里传 None、不验身份（见 script_task 的 _buy_heisui_at）—— 两者图标本体确实是同一张达摩脸，但确认框外框一个是六边形斜角、一个是方形直角，碎片模板能不能套上没实测过，不敢赌。**这张的右边缘会把片数角标框进来**：裁切范围 598,258 起 86×92，右边界到 x684，而角标起点是 x667 —— 1 片时角标不显示（实测 0.939），2 片时显示「2」落到框内（实测 0.911），数字更粗还会继续掉。仍然过 0.8 阈值，但余量只有 0.111~0.061，所以 2 片起请配合 ms_check_black_new 一起用（那张把角标整块裁掉了，1 片 0.991 / 2 片 1.000） 
 	I_MS_CHECK_BLACK = RuleImage(roi_front=(598,258,86,92), roi_back=(455,238,273,123), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_black.png")
+	# **把右下角片数角标整块裁掉**的御行达摩碎片大图，70×92。碎片确认框右下角会显示这一单有几片（1 片时不显示角标，2 片起才显示数字），数字本身随片数变，留在模板里就等于只认某一种片数：老的 ms_check_black（86 宽）在 2 片弹窗上只有 0.911，片数再多一点还会继续掉（角标换成粗体 8 时掉到 0.846，离 0.8 阈值只剩 0.046）。这张从 x595 起只取 70 像素宽（角标起点 x667），宽度刚好停在角标左边，竖向取满 92 像素保住达摩脸的双眼 / 嘴 / 底部金色底座。用户 11-04 提供 1 片(54 勾玉) 与 2 片(144 勾玉) 两张截图指定这么裁。标定：正样本 **1 片 0.991 / 2 片 1.000，两张命中位置都是 (595,258)**（说明 1 片与 2 片的确认框大图位置像素级一致，一份模板通吃）；负样本 三星太鼓弹窗 0.220、神秘符咒弹窗 0.253、四星太鼓弹窗 0.182、金币纸扇弹窗 0.240、货架 0.211~0.243。阈值 0.85 两侧余量 0.141 / 0.597。与老模板并存，任一命中即算，老的那份留着兜底（1 片场景实买验证过） 
+	I_MS_CHECK_BLACK_NEW = RuleImage(roi_front=(595,258,70,92), roi_back=(500,170,320,200), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_black_new.png")
 	# description 
 	I_MS_CHECK_TAIKO_3 = RuleImage(roi_front=(567,259,70,81), roi_back=(465,245,252,124), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_taiko_3.png")
-	# description 
+	# **老式**确认框里的四星太鼓大图（66×73，大图顶边 y277）。只能认老式那份布局：新式确认框（带「- 1 +」数量调节）的大图顶边在 y234、下方少了那圈装饰，这张对上去即便是全图不限区也只有 0.164~0.167，必须配合 ms_check_taiko_4_new 一起用。见那条的说明 
 	I_MS_CHECK_TAIKO_4 = RuleImage(roi_front=(591,277,66,73), roi_back=(453,235,280,146), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_taiko_4.png")
+	# **新式**确认框（带「- 1 +」数量调节）里的四星太鼓大图，82×73 含图标外圈 8 像素弹窗底色。新式布局大图顶边在 y234 附近（和货架上的图标是 1:1 同尺寸，多尺度实测最佳缩放 1.00、分数 0.983），老式在 y277 且下方多一圈装饰，同一张模板认不了两种，所以两张都存、任一命中即算。图标里那串 999 是结界卡图案自带的，不是持有量数字，不用截掉。标定：正样本 0.965~1.000（数量1 / 数量2 / 另两张截图）；负样本 三星太鼓弹窗 0.680、三星斗鱼弹窗 0.399、三星太阴弹窗 0.339、达摩碎片老式弹窗 0.168、货架 0.157~0.212。阈值 0.85 两侧余量 0.115 / 0.170。roiBack 上边界必须到 170：老式的 235 比大图顶边 234 还高一像素，模板放不进去 
+	I_MS_CHECK_TAIKO_4_NEW = RuleImage(roi_front=(588,226,82,73), roi_back=(500,170,320,200), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_taiko_4_new.png")
+	# **新式**确认框里的三星太鼓大图。三星太鼓几乎总带数量调节（剩余购买次数常见 2~3），也就几乎只会以新式布局出现 —— 而老模板 ms_check_taiko_3 在新式弹窗里只有 0.23~0.41（阈值 0.8），等于永远认不出、永远报「购买弹窗没出现」。标定：正样本 1.000（三星太鼓 数量2 / 45 勾玉 弹窗）；负样本 四星太鼓弹窗 0.715、神秘符咒弹窗 0.411、三星斗鱼弹窗 0.287、货架 0.277~0.289。阈值 0.85 两侧余量 0.150 / 0.135 
+	I_MS_CHECK_TAIKO_3_NEW = RuleImage(roi_front=(589,229,82,73), roi_back=(500,170,320,200), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_taiko_3_new.png")
+	# **新式**确认框里的神秘咒符大图。蓝票的确认框比结界卡窄一档、大图也小一圈（62×59，顶边 y233），老的 ms_check_blue 标定在 y241、搜索区又盖不到，实测只有 0.13~0.15 —— 这就是以前只能拿勾玉确认键当判据的原因（那个只能证明「开了个花勾玉的框」，证明不了框里是哪件道具）。标定：正样本 1.000 / 1.000 / 0.988（三张不同时间的截图）；负样本 金币纸扇弹窗 0.398、三星太鼓弹窗 0.382、四星太鼓弹窗 0.357、货架 0.427。阈值 0.85 两侧余量 0.138 / 0.423 
+	I_MS_CHECK_BLUE_NEW = RuleImage(roi_front=(587,225,78,75), roi_back=(500,170,320,200), threshold=0.85, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_blue_new.png")
 	# description 
 	I_MS_CHECK_TAIKO_6 = RuleImage(roi_front=(580,253,100,100), roi_back=(430,220,334,171), threshold=0.8, method="Template matching", file="./tasks/MysteryShop/ms/ms_ms_check_taiko_6.png")
 	# description 

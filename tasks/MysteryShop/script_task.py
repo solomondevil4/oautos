@@ -99,11 +99,19 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     #                刷新后那批只识别 + 分享、不买，留给第二趟比价挑便宜的；
     #                全程不点右箭头（好友店留给第二趟统一比价）。
     #   PASS_SECOND  第二趟：不分享，把每家店都只记录一遍，挑出最便宜的那家回程买。
+    #
+    # 「本趟是第几趟」由配置里记下的状态决定（shop_config.first_pass_date == 今天
+    # 就是第二趟），**不再按钟点猜**：第一趟被拖后时，按「离 first / second 哪个近」
+    # 会把它误判成第二趟，那一天就不刷新也不分享了。详见 _which_pass。
     PASS_SINGLE, PASS_FIRST, PASS_SECOND = 0, 1, 2
-    # 用「本次计划运行时刻」判趟次时允许的偏差（秒）。调度器把第一趟排在 first、
-    # 第二趟排在 second，所以计划时刻和哪一头对得上就是那一趟；但手动点运行时
-    # next_run 可能还挂着一个老时刻，偏差超过这个值就不信它、改用当前时间兜底。
-    PASS_PLAN_TOLERANCE = 7200
+
+    # 第一趟结束时**已经过了**第二次运行时刻，就改成「现在再等这么多分钟」补跑第二趟。
+    # 为什么需要：老逻辑只有「还没到点」才排第二趟，第一趟一超时（进店读等级 + 买刷新前
+    # 那批 + 两次分享 + 花 5 勾玉刷新，实测经常比两次时刻之间那点间隔还长），就会直接排到
+    # 下一个开放日 —— 当天第二趟永远不跑。第一趟被拖到下午/半夜才跑时同样如此。
+    # 5 分钟只是给「退出商店 -> 回庭院 -> 重新进店」留缓冲：第二趟不依赖商店刷新，
+    # 刷新是第一趟当场用 5 勾玉做完的，不需要等太久。
+    SECOND_PASS_CATCHUP_MINUTES = 5
 
     # 分享次数上限：一天最多两次（刷新前一次、刷新后一次），每次对应一个店面。
     # 刷新前后在游戏里是两个独立商店，好友点开看到的是各自那批货，所以各分享一次。
@@ -178,6 +186,42 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 同样会撞 device.py:265 的 10 次红线（上游 task/Component/Buy/buy.py:69-76 就无限点）。
     HEISUI_REWARD_CLICKS = 2
 
+    # ---------- 购买弹窗的两道闸门（10-31 / 11-04 两次真机事故） ----------
+    # 事故经过：点了一格**已售罄**的达摩碎片（剩余购买次数 0），游戏毫无反应；脚本没等
+    # 「画面真的变了」就往下走，在**货架**上把「金色价格牌 + 勾玉 + 数字」当成了弹窗里的
+    # 勾玉确认键，点下去正好压在旁边三星太阴符咒的价格牌上 —— 于是弹开的是**太阴 45 勾玉**
+    # 的购买框，下一轮勾玉键在真弹窗里稳稳命中，45 勾玉当场成交（录屏 + 日志双重确认）。
+    #
+    # 闸门①「点完画面必须真的变」：货架静止时前后两帧平均差 0.1~0.4，弹窗出现是 30~45，
+    # 差 40 倍以上，比任何模板分数都稳（同一帧上 check_black 在货架只有 0.03，却仍在
+    # 别的环节放行了）。连续 POPUP_STILL_LIMIT 次（≈1.2 秒）都没变就判「点空了」，
+    # 立刻收手 —— 之后绝不再点任何坐标，避免把旁边的东西点开。
+    POPUP_MIN_DIFF = 5.0
+    POPUP_STILL_LIMIT = 3
+    # 闸门②「弹窗里的钱必须等于货架上那一格」：弹开别的商品时，购买框长得一模一样，
+    # 唯一还能区分的就是价格（达摩碎片 40 / 三星太阴 45）。单价对不上就取消。
+    # 容差 0.5 是因为 OCR 只出整数；读不到总价（<=0）时按原行为放行，不额外拦，
+    # 免得 OCR 偶发失败把正常购买漏掉。
+    DLG_PRICE_TOLERANCE = 0.5
+
+    # 「已达上限」弹窗的判据关键字。必须四个字连续出现才算 —— 原因见 _limit_warn_appear：
+    # OCR 自带的 filter() 会退化成逐字匹配，光靠它会把货架上的「御行达摩」判成这个弹窗。
+    LIMIT_WARN_KEYWORD = '已达上限'
+
+    # ---------- 整只御行达摩推送 ----------
+    # 只推整只（_cell_is_scrap 判成非碎片的那一格），碎片不推：碎片几乎每店都有，
+    # 推出来就是噪声；整只一周未必刷出一次，用户要第一时间知道。
+    # 推送走全局推送通道（self.config.notifier，和一键协战 / 报错推送同一套），
+    # 所以「设置 - 推送」没配好时 push() 自己返回 False，这里只记一行日志。
+    PUSH_TITLE = '神秘商店：发现整只御行达摩'
+    # 去重键 = (店面标签, 列号, 价格)。滚动前后两屏有重叠，同一格会被 _scan_screen
+    # 识别两次；列号不随滚动变（四列中心线固定），价格又能把同列的两只分开，
+    # 两者一起才能既不重复推送、又不漏掉同一家店的第二只。
+    # 类级默认值给「没走 run() 的入口」兜底，读它不会 AttributeError。
+    daruma_push_seen = frozenset()
+    # 当前扫的是哪一批货 / 哪一家店，只用于推送正文和去重。
+    shop_tag = '自己的店'
+
     # 神秘商人等级上限。不再做成 GUI 配置项：这一项的唯一目的就是把商人顶到 5 级
     # （5 级才刷得出高价值道具），用户要求固定 5，省掉一行输入框。
     COIN_MAX_LEVEL = 5
@@ -242,6 +286,20 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     DLG_PRICE_DX, DLG_PRICE_DY = 46, 8
     DLG_PRICE_W = 70
     DLG_QTY_DX, DLG_QTY_DY = -10, -82
+    # 总价数字的**左边界自己去画面里找**，不硬吃 DLG_PRICE_DX。
+    # 原因：勾玉图标右边缘在 jx+36、数字左边界在 jx+52，固定偏移 +46 两边都只剩
+    # 10 像素余量。2026-11-04 实测把左边界从 +46 挪到 +28（只差 12 像素），
+    # 「80」立刻被读成「980」——框到勾玉图标，红色螺旋被当成「9」，而且置信度
+    # 0.685 仍高于 OCR_MIN_SCORE=0.6，光靠分数拦不住。同理挪到 +34 就是临界点。
+    # 所以改成先找数字的深色笔画再框它：间距怎么变都不会框到图标。
+    #   深色判据：数字是深棕（三通道最大值 < 110），横幅底是浅橙。
+    #     实测深色像素占比 数字笔画列 10~33%、勾玉图标 0.3%、横幅空白 0%，
+    #     差两个数量级，DARK_COL_MIN=8 能把图标整块滤掉（图标每列不到 1 个）。
+    #   DLG_PRICE_LEFT_MIN/MAX：定位结果必须落在这个区间（相对勾玉键）才认，
+    #     否则说明找到的是别的东西（比如深色底 UI），退回固定偏移。
+    DLG_DARK_LEVEL = 110
+    DLG_DARK_COL_MIN = 8
+    DLG_PRICE_LEFT_MIN, DLG_PRICE_LEFT_MAX = 30, 80
     # 点过「最大」之后，确认框里的总价是「N 份的钱」。如果读出来的单价
     # 低于货架单价的这个倍数，只可能是位数被价格框截断了（截断只会让数字变小），
     # 宁可这一格不买，也不能按读错的钱扣勾玉。
@@ -312,16 +370,18 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # 弹窗卡死标记。run_shop 里靠它判断「这一屏还能不能继续点」，每趟必须清，
         # 否则上一趟卡过一次会让这一趟整趟不买金币道具。
         self.popup_stuck = False
+        # 整只御行达摩推送的去重集合与店面标签也每趟重置：跨趟残留会让下一趟
+        # 把「上趟已经推过的那只」当成重复，直接不推。
+        self.daruma_push_seen = set()
+        self.shop_tag = '自己的店'
         if con.shop_config.buy_coin_item:
             if self.coin_level > 0:
                 logger.info(f'MysteryShop: 神秘商人 Lv{self.coin_level}（目标 {self.COIN_MAX_LEVEL} 级）')
             else:
                 logger.warning('MysteryShop: 进店读不到神秘商人等级，本任务不买金币道具')
 
-        # 判本次是第几趟。两趟分工完全不同的原因见 PASS_SINGLE / PASS_FIRST / PASS_SECOND
-        # 三个常量的注释：第一趟把「刷新前」的货吃掉并把刷新后的货分享出去，
-        # 第二趟才逐店比价挑最便宜的 —— 这样 5 勾玉刷出来的那批货不会在第一趟被高价买光。
-        self.pass_index = self._which_pass(con.shop_config)
+        # 判本次是第几趟。靠配置里记下的「第一趟完成日期」，不看钟点 —— 原因见 _which_pass。
+        self.pass_index = self._which_pass()
         if self.pass_index == self.PASS_SECOND:
             logger.info('MysteryShop: 本趟是今天第二趟 —— 只比价不分享')
             self._run_pass2(con)
@@ -332,6 +392,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             else:
                 logger.info('MysteryShop: 只配了一趟 —— 刷新前后都买；不逛好友店')
             self._run_pass1(con, buy_after_refresh=self.pass_index == self.PASS_SINGLE)
+            # 第一趟干完立刻记状态：下次进来据此判成第二趟。只配一趟时不用记（没有第二趟）。
+            if self.pass_index == self.PASS_FIRST:
+                self._mark_first_pass_done()
 
         self.shop_reward()
         logger.info('Exit MysteryShop')
@@ -339,44 +402,57 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         self.next_time(True)
 
-    def _which_pass(self, cfg) -> int:
+    def _which_pass(self) -> int:
         """
         本次是当天第几趟：PASS_SINGLE / PASS_FIRST / PASS_SECOND。
 
-        判据优先级：
+        只看**记下来的状态**，不看钟点：
         ① 没配第二次时刻（00:00:00）=> 只有一趟，直接 PASS_SINGLE；
-        ② 本次的**计划时刻**（scheduler.next_run）离 first 近就是第一趟、离 second 近
-           就是第二趟。这是最准的 —— next_time() 排班时第一趟排 first、第二趟排 second；
-        ③ 计划时刻不可信（日期不是今天，或当前时间离它超过 PASS_PLAN_TOLERANCE）时，
-           按当前时刻离 first / second 哪个近算。手动点「运行」走的都是这条。
+        ② 配置里记着「本开放日第一趟已跑」的日期 == 今天 => PASS_SECOND；
+        ③ 其余情况一律 PASS_FIRST。
+
+        为什么不用时间猜（老实现）：原先按「当前时刻 / 计划时刻离 first 还是离 second
+        近」判。第一趟只要被拖后 —— 前面任务排队、卡顿重启、手动点「运行」—— 判据就会
+        把它算成第二趟，于是那一趟不刷新、不分享；而第二趟只比价，等于这天白白丢掉
+        5 勾玉刷新机会和两次分享。日期标记跟钟点无关，拖到多晚都不会判错。
+
+        标记由 _mark_first_pass_done() 在第一趟真正干完之后写入，
+        所以「跑到一半崩了 → 重启」仍然算第一趟（会重跑一遍，不会跳成第二趟）。
         """
-        zero = time(hour=0, minute=0, second=0)
-        first, second = cfg.time_of_mystery, cfg.time_of_mystery_2
-        if second == zero:
+        con = self.config.mystery_shop
+        if con.shop_config.time_of_mystery_2 == time(hour=0, minute=0, second=0):
             return self.PASS_SINGLE
 
-        now = datetime.now()
-
-        def seconds(t) -> int:
-            return t.hour * 3600 + t.minute * 60 + t.second
-
-        ref = now.time()
-        try:
-            planned = self.config.mystery_shop.scheduler.next_run
-        except Exception:
-            planned = None
-        if isinstance(planned, datetime) and planned.date() == now.date():
-            drift = abs(seconds(planned.time()) - seconds(ref))
-            if drift <= self.PASS_PLAN_TOLERANCE:
-                ref = planned.time()
-                logger.info(f'MysteryShop: 本次计划时刻 {ref.strftime("%H:%M:%S")}')
-            else:
-                logger.info(f'MysteryShop: 计划时刻 {planned.strftime("%H:%M:%S")} 与实际'
-                            f'相差 {drift // 60} 分钟，改按当前时间判趟次')
-
-        if abs(seconds(ref) - seconds(second)) < abs(seconds(ref) - seconds(first)):
+        today = datetime.now().strftime('%Y-%m-%d')
+        marked = (con.shop_config.first_pass_date or '').strip()
+        if marked == today:
+            logger.info(f'MysteryShop: 记录显示今天（{today}）第一趟已跑完，本次按第二趟处理')
             return self.PASS_SECOND
+        logger.info(f'MysteryShop: 记录显示今天（{today}）第一趟还没跑（记录值「{marked or "空"}」），'
+                    f'本次按第一趟处理')
         return self.PASS_FIRST
+
+    def _mark_first_pass_done(self) -> None:
+        """
+        把「本开放日第一趟已跑完」写进配置，供下一次运行判成第二趟。
+
+        必须 `reload()` 再写：`set_next_run()` -> `Config.task_delay()` 内部会
+        `self.config.reload()` 把 model 换成磁盘上的新对象，内存里刚写的日期会被丢掉，
+        随后那次 save 落盘的就是没有标记的旧值。所以顺序是
+        「reload 取磁盘最新 -> 写日期 -> save 落盘」，之后 next_time() 里的 reload
+        才能把这个日期读回来。（AssistBattle 的 mark_account_done 也是同一套路。）
+
+        写失败不影响本趟：只是下次会被判成第一趟（第一趟的老化风险是重跑，不是丢活）。
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        try:
+            self.config.reload()
+            self.config.mystery_shop.shop_config.first_pass_date = today
+            self.config.save()
+        except Exception as e:
+            logger.warning(f'MysteryShop: 记录第一趟完成日期失败，下次仍会按第一趟处理：{e!r}')
+            return
+        logger.info(f'MysteryShop: 已记录 {today} 第一趟跑完，下一次运行按第二趟处理')
 
     def _run_pass1(self, con, buy_after_refresh: bool) -> None:
         """
@@ -396,6 +472,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # ① 刷新前：按勾选买一遍。run_shop 内部会先打一条识别日志，顺便把
         #    「价格达标的勾玉道具」记进 share_worthy。
         self.share_worthy = set()
+        self.shop_tag = '刷新前'
         self.run_shop(cfg)
 
         # ② 分享第 1 次（刷新前的店面）
@@ -408,6 +485,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         # ④ 刷新后：两趟运行时只识别，只配一趟时连买
         self.share_worthy = set()
+        self.shop_tag = '刷新后'
         if buy_after_refresh:
             self.run_shop(cfg)
         else:
@@ -672,12 +750,19 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         if (shop_config.black_daruma_scrap or shop_config.black_daruma) and not self.jade_short:
             bought += self.buy_daruma_screen(shop_config)
         if shop_config.shop_kaiko_3 and not self.jade_short:
-            bought += self._price_capped_buy(self.I_MS_TAIKO_3, self.I_MS_CHECK_TAIKO_3,
-                                             shop_config.kaiko_3_max_price,
-                                             self.TAIKO_3_PRICE_DX, self.TAIKO_3_PRICE_DY,
-                                             self.TAIKO_3_MIN_SCORE, self.TAIKO_3_CLICK, '三星太鼓')
+            # 三星太鼓几乎总带数量调节（剩余 2~3 次），也就是说几乎只会以新式布局出现，
+            # 老模板在新式弹窗里只有 0.23~0.41，所以同样要新旧两份（详见 _buy_at）。
+            bought += self._price_capped_buy(
+                self.I_MS_TAIKO_3,
+                (self.I_MS_CHECK_TAIKO_3, self.I_MS_CHECK_TAIKO_3_NEW),
+                shop_config.kaiko_3_max_price,
+                self.TAIKO_3_PRICE_DX, self.TAIKO_3_PRICE_DY,
+                self.TAIKO_3_MIN_SCORE, self.TAIKO_3_CLICK, '三星太鼓')
+        # 四星太鼓的 check 给两份：老式确认框大图 66×73@y277、新式顶边 y234 且少了下方装饰，
+        # 同一件道具两套布局，单张只能认其中一种（详见 _buy_at 的说明）。
         if shop_config.shop_kaiko_4 and not self.jade_short:
-            bought += self._price_capped_buy(self.I_MS_TAIKO_4, self.I_MS_CHECK_TAIKO_4,
+            bought += self._price_capped_buy(self.I_MS_TAIKO_4,
+                                             (self.I_MS_CHECK_TAIKO_4, self.I_MS_CHECK_TAIKO_4_NEW),
                                              shop_config.kaiko_4_max_price,
                                              self.TAIKO_4_PRICE_DX, self.TAIKO_4_PRICE_DY,
                                              self.TAIKO_4_MIN_SCORE, self.TAIKO_4_CLICK, '四星太鼓')
@@ -703,6 +788,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         read_dialog 透传给 _buy_at：勾了就是「点开确认框后再按数量/总价复核一次」，
         给有「- 1 +」数量调节的商品（神秘咒符）用。
+
+        check 透传给 _buy_at，可以传单个规则或一组规则：同一件道具在「老式/新式」
+        两套确认框里的道具图尺寸位置不同，需要各存一份模板时传 tuple。
         """
         self.popup_stuck = False
         if self.jade_short:
@@ -797,16 +885,17 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         read_dialog=True：蓝票的确认框带「- 1 +」数量调节器，价格显示的是这一单的
         总价，必须按 单价 = 总价 / 数量 复核（见 _dialog_qty_price）。
 
-        **判据用 I_MS_JADE_BUY（勾玉确认键）而不是 I_MS_CHECK_BLUE**：实测蓝票的
-        确认框里那块道具大图在 (595,200)，而 I_MS_CHECK_BLUE 标定在 (592,241)，
-        它的搜索框 roiBack(455,235,261,146) 根本盖不到 200 那一行，match_all 一张都不出；
-        把搜索框拉高到 y185 能命中，但分数只有 0.804~0.818（截图是 JPEG，压缩把分数
-        压下去了），做判据太薄。勾玉确认键在两套布局下都有 0.972~0.979，而且是
-        「这个框是花勾玉的购买确认框」最直接的证据，所以拿它当判据。
-        点错格子也不会买错：确认框里的总价会按上限复核，太鼓 450 这种当场就被拦下。
+        **判据是「确认框里那张蓝票大图」**：I_MS_CHECK_BLUE（老式）+ I_MS_CHECK_BLUE_NEW
+        （新式）任一命中。以前这里传的是 I_MS_JADE_BUY（勾玉确认键），因为老模板
+        I_MS_CHECK_BLUE 标定在 y241、搜索区盖不到新式布局 y233 那行，实测只有 0.13~0.15。
+        但「勾玉键在」只能证明开了个花勾玉的框，证明不了框里是哪件道具 —— 用户 11-04
+        要求判据就得是「确认框认识这件道具」。新式模板实测正样本 0.988~1.000、
+        负样本 ≤0.427，比勾玉键更贴合本意；勾玉键仍然留着，但只用在两处后续校验
+        （闸门②读单价、点购买键），不再当身份判据。
         """
         return self._price_capped_buy(
-            self.I_MS_BLUE_ICON, self.I_MS_JADE_BUY,
+            self.I_MS_BLUE_ICON,
+            (self.I_MS_CHECK_BLUE, self.I_MS_CHECK_BLUE_NEW),
             shop_config.mystery_amulet_max_price,
             self.BLUE_PRICE_DX, self.BLUE_PRICE_DY,
             self.BLUE_MIN_SCORE, self.BLUE_CLICK, '神秘咒符', read_dialog=True)
@@ -1150,9 +1239,45 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             if isinstance(value, int) and 1 <= value <= self.QTY_MAX:
                 qty = value
         price = self._price_in_box(
-            image, [jx + self.DLG_PRICE_DX, jy + self.DLG_PRICE_DY, self.DLG_PRICE_W, 34],
+            image, [self._dlg_price_left(image, jx, jy), jy + self.DLG_PRICE_DY,
+                    self.DLG_PRICE_W, 34],
             max_price, rule=self.O_MS_DLG_PRICE)
         return qty, price
+
+    def _dlg_price_left(self, image, jx: int, jy: int) -> int:
+        """
+        购买确认框里「总价」数字的 ROI 左边界（绝对 x），找不到就退回固定偏移。
+
+        做法：在勾玉图标那一带横扫，逐列数深色像素，第一个够多的列就是数字的起笔。
+        数字是深棕（三通道最大值 < DLG_DARK_LEVEL），勾玉图标是红色，横幅底是浅橙，
+        所以深色判据天然只认数字。实测（三张真机弹窗截图）：
+            横幅空白列 0%、勾玉图标列 0.3%、数字笔画列 10~33%
+        DLG_DARK_COL_MIN=8 卡在中间，图标整块被滤掉。
+
+        为什么要自动化而不是吃固定 DLG_PRICE_DX：见那个常量上面的注释 ——
+        固定偏移只留 10 像素余量，一旦框进勾玉图标，「80」会被读成「980」。
+
+        定位成功后返回「左边界 −2」留一点白边；这是实测读数最好的位置
+        （三张图分数 0.997/0.992/0.992）。定位结果超出合理区间（找到的是别的
+        深色物件）或根本找不到，返回固定偏移，行为与以前完全一致。
+        """
+        h, w = image.shape[:2]
+        x0, x1 = max(0, jx - 10), min(w, jx + 140)
+        y0, y1 = max(0, jy + 4), min(h, jy + 44)
+        if x1 - x0 < 40 or y1 - y0 < 10:
+            return jx + self.DLG_PRICE_DX
+
+        win = image[y0:y1, x0:x1]
+        dark = win.max(axis=2) < self.DLG_DARK_LEVEL if win.ndim == 3 \
+            else win < self.DLG_DARK_LEVEL
+        for offset, count in enumerate(dark.sum(axis=0)):
+            if count < self.DLG_DARK_COL_MIN:
+                continue
+            left = x0 + offset
+            if self.DLG_PRICE_LEFT_MIN <= left - jx <= self.DLG_PRICE_LEFT_MAX:
+                return left - 2
+            break
+        return jx + self.DLG_PRICE_DX
 
     def _close_purchase_dialog(self, retry: int = 3) -> bool:
         """
@@ -1179,9 +1304,26 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         但记账时必须分开：整只的 qty 恒为 1，要是也记成「黑碎 1 片」，
         后面就会把好友店真正的 1 片装碎片当成「已经买过」而跳过。
         price / unit 只用于日志（「买了什么、多少钱」），不参与点击。
+
+        **check 给两份**（用户 11-04 要求）：碎片确认框右下角带「这一单几片」的角标，
+        数字随片数变（1/2/3…），老模板 ms_check_black 的 86 宽恰好把 2 片时的角标框进去了
+        —— 实测 2 片弹窗只有 0.911，片数再多还会继续掉。ms_check_black_new 专门把角标
+        整块裁掉（70 宽），对任何片数都一样：实测 1 片 0.991、2 片 1.000，命中位置都在
+        (595,258)，一份通吃。
+
+        **整只御行达摩传 None（不做身份校验）**：用户 11-04 明确说「整颗目前没找到 check
+        素材」。整只和碎片图标本体确实是同一张达摩脸（货架截图比对过），但确认框的外框
+        形状不同（碎片六边形斜角、整只方形直角），拿碎片模板硬套能不能过完全没法实测。
+        与其赌一个没标定过的模板、认不出就白丢一只整只，不如退到闸门①：只按「画面大改」
+        判弹窗（见 _buy_at）。整只的漏买代价远大于误买的代价 —— 点的是货架识别出来的精确
+        格子，弹窗里本来就该是它。
         """
+        if label == '御行达摩':
+            check = None
+        else:
+            check = (self.I_MS_CHECK_BLACK, self.I_MS_CHECK_BLACK_NEW)
         return self._buy_at(ax, ay, self.HEISUI_H, self.HEISUI_CLICK,
-                            self.I_MS_CHECK_BLACK, label, qty, price, unit)
+                            check, label, qty, price, unit)
 
     def _jade_short_cancel(self) -> bool:
         """
@@ -1265,7 +1407,30 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         判据 check 是购买弹窗里那块道具大图（黑碎 I_MS_CHECK_BLACK、三星太鼓
         I_MS_CHECK_TAIKO_3 …），它出现才说明点的是这个道具、弹窗真的开了
-        （也是唯一能确认「没点错格子」的信号）。
+        （也是唯一能确认「没点错格子」的信号）。**只有它，没有兜底**。
+
+        **唯一的例外是 check=None**：目前只有整只御行达摩走这条路（用户 11-04 说
+        「整颗没找到 check 素材」）。这时闸门②整个跳过，只留闸门①的画面大改 ——
+        等于承认「无法验明框里是什么」。只有在该道具**漏买代价 > 误买代价**、而且
+        点击坐标本身就来自货架识别（不是盲点）时才允许这么用。别拿它当省事捷径。
+
+        **check 可以传多个（tuple / list），任一份命中即算**。同一件道具在
+        「老式」和「新式」两套确认框里，道具大图的位置和下方装饰都不同
+        （四星太鼓实测：老式顶边 y277、新式顶边 y234，老模板对新的全图最高只有 0.166），
+        一张模板认不了两种布局。现在的分工：
+          神秘咒符  I_MS_CHECK_BLUE            + I_MS_CHECK_BLUE_NEW
+          御行达摩碎片  I_MS_CHECK_BLACK       + I_MS_CHECK_BLACK_NEW（角标免疫，见下）
+          御行达摩整只  None                   （暂无确认框素材，只判画面大改）
+          三星太鼓  I_MS_CHECK_TAIKO_3         + I_MS_CHECK_TAIKO_3_NEW
+          四星太鼓  I_MS_CHECK_TAIKO_4         + I_MS_CHECK_TAIKO_4_NEW
+        传单个规则也照旧可用（只有一份模板的道具就这么传）。若某件道具将来出现了
+        第三种布局，症状是「弹窗开着却报购买弹窗没出现」—— 按新布局再补一张模板即可，
+        别改回去用按钮当判据。
+
+        **达摩这组是另一种情况，不是两套布局**：碎片确认框右下角会写「这一单几片」，
+        数字随片数变（1/2/3…）。老模板 86 宽恰好把 2 片时的角标框了进去，实测掉到
+        0.911；ms_check_black_new 把角标整块裁掉（70 宽、竖向取满），对任何片数都不敏感。
+        两份都留着是因为老模板已在 1 片场景实买验证过，新的只管加保险、不回退老的。
 
         read_dialog=True 时，在点勾玉确认键之前先读确认框里的「数量」和「总价」，
         按 单价 = 总价 / 数量 复核一遍（见 _dialog_qty_price）。传了 cap 且复核出的
@@ -1276,9 +1441,22 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         **「最大」按钮**：确认框的数量行最右侧有时会多一个双上箭头圆按钮（I_MS_MAX_BUY），
         点它数量直接跳到这次能买的上限。出现就点、没出现就按数量 1 点勾玉。点了之后
         总价变成 N 份的钱，所以即使 read_dialog=False 也会强制读一次数量/总价复核单价。
+
+        **两道闸门**（没做到就会花错钱，见 POPUP_MIN_DIFF 上面的事故记录）：
+        ① 点完画面必须真的变，否则判点空立刻收手，绝不再点任何坐标；
+        ② 确认框里的单价必须等于货架上那一格，不符就取消 —— 弹开别的商品时，
+        购买框、勾玉确认键全都一模一样，只有价格能把它认出来。
         """
         cx, cy, cw, ch = click_box
         top = ay - tmpl_h
+        # check 允许传单个规则或一组规则（两套确认框布局各一份模板，见 docstring）；
+        # 传 None = 这件道具还没有确认框大图素材，只按「画面大改」判弹窗（见下面的闸门说明）
+        if check is None:
+            checks = ()
+        elif isinstance(check, (tuple, list)):
+            checks = tuple(check)
+        else:
+            checks = (check,)
         if self.jade_short:
             # 本趟已经确认勾玉不够，别再点 —— 点了也只会弹一次「勾玉不足」白等一圈
             logger.info(f'MysteryShop: 勾玉不足中，跳过 {label}({ax},{ay})')
@@ -1286,16 +1464,51 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         icon = RuleClick(roi_front=(ax + cx, top + cy, cw, ch),
                          roi_back=(ax + cx, top + cy, cw, ch),
                          name=f'ms_buy_{ax}_{ay}')
+        # 闸门①：点下去之前先留一帧底片。售罄的格子点了游戏毫无反应，画面几乎不动；
+        # 弹窗真开出来，画面会大改（量化数据见 POPUP_MIN_DIFF 的注释）。
+        # 只靠下面那句 appear(check) 挡不住 —— 11-04 那次就是它在货架上成立、直接放行。
+        self.screenshot()
+        popup_before = self.device.image.copy()
         self.click(icon)
         sleep(1)
 
         timer = Timer(self.HEISUI_POPUP_TIMEOUT).start()
+        still = 0               # 连续「画面没变」的次数，连续 3 次（约 1.2 秒）就判点空了
         while 1:
             self.screenshot()
+            diff = float(cv2.absdiff(popup_before, self.device.image).mean())
             if self._jade_short_cancel():
                 return False
-            if self.appear(check):
+            # 弹窗判定 = 模板命中 **且** 画面真的变了。两个条件缺一不可：模板会误命中，
+            # 画面动也可能只是别处的动画；同时成立才说明「这一格弹出了购买框」。
+            #
+            # 确认框有**两套布局**，道具大图的位置和下方装饰都不一样：
+            #   老式（达摩碎片那种，剩余次数恒为 1、没有数量调节）：大图顶边 y277。
+            #   新式（带「- 1 +」数量调节）：大图顶边 y234，比老式高 40 多像素。
+            #   11-04 17:54 四星太鼓实测：老模板对新式全图最高只有 0.166，于是弹窗明明
+            #   已开、这里一直不成立，白等 8 秒后报「购买弹窗没出现，多半已售罄」，那格就没买。
+            # 所以每件道具都给两份模板（ms_check_* 老式 + ms_check_*_new 新式），checks
+            # 里任一命中都算。**只标定了其中一种布局的道具，碰到另一种布局就认不出** ——
+            # 这时宁可这一格不买，也绝不拿别的信号凑合，理由见下面两条。
+            #
+            # 不用 I_MS_MAX_BUY（「最大」双箭头按钮）兜底：它只能证明「弹出来一个带数量
+            # 调节的框」，证明不了框里是哪件道具。11-04 那次 45 勾玉买错三星太阴，
+            # 就是先点空一格、又在货架上误命中，一路放行到底的。
+            # 不用 I_MS_JADE_BUY 兜底：售罄格弹出的**道具说明面板**上也印着勾玉价格图标
+            # （货架实测 0.677），拿它判会把说明面板当成购买框，接着去点最大/勾玉键。
+            if diff >= self.POPUP_MIN_DIFF and (not checks or any(self.appear(c) for c in checks)):
                 break
+            if diff < self.POPUP_MIN_DIFF:
+                still += 1
+                if still >= self.POPUP_STILL_LIMIT:
+                    logger.warning(f'MysteryShop: {label}({ax},{ay}) 点了之后画面连续 {still} 次'
+                                   f'没变化（差 {diff:.1f} < {self.POPUP_MIN_DIFF}），判为点空'
+                                   f'（多半已售罄），跳过这一格')
+                    if not self.close_popup():
+                        self.popup_stuck = True
+                    return False
+            else:
+                still = 0
             if self.appear(self.I_BUY_RMB):
                 logger.warning(f'MysteryShop: {label}({ax},{ay}) 弹出人民币购买，取消')
                 self.click(self.C_BUY_CANCEL)
@@ -1307,6 +1520,39 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                     self.popup_stuck = True
                 return False
             sleep(0.3)
+
+        # 闸门②：确认框里的钱必须等于货架上读到的那一格。
+        # 闸门① 只保证「有东西弹出来了」，保证不了「弹的是我点的那一件」—— 弹错商品时，
+        # 所有购买框下半截的勾玉确认键长得一模一样，唯一还能区分的就是价格：
+        # 达摩碎片 40、三星太阴 45，这一单差的就是这 5 勾玉。
+        # 必须在点「最大」之前读：点了最大总价变成 N 份的钱，就没法跟货架单价比了。
+        # 坐标一定在 appear 之后取 —— appear 命中会把 roi_front 原地改写成命中框的
+        # 绝对坐标（module/atom/image.py:175 _update_roi_front），而确认框有两套布局，
+        # 勾玉键上下差 44 像素，只有用命中位置算偏移才不会读到空白。
+        # 期望价用 unit（复核后的单价）而不是 price：整只御行达摩是四位数，货架上那个
+        # 44 宽的窄窗口会把首位切掉（1920 读成 920），拿它去比会误拦。
+        expect = unit if unit else price
+        if expect and self.appear(self.I_MS_JADE_BUY):
+            jx, jy = self.I_MS_JADE_BUY.roi_front[0], self.I_MS_JADE_BUY.roi_front[1]
+            dqty, dprice = self._dialog_qty_price(self.device.image, jx, jy)
+            if dprice > 0:
+                dunit = dprice / dqty
+                if abs(dunit - expect) > self.DLG_PRICE_TOLERANCE:
+                    # OCR 抖一次就取消太亏，隔 0.3 秒重取一帧复核第二遍，两遍都不符才拦
+                    sleep(0.3)
+                    self.screenshot()
+                    if self.appear(self.I_MS_JADE_BUY):
+                        jx, jy = self.I_MS_JADE_BUY.roi_front[0], self.I_MS_JADE_BUY.roi_front[1]
+                    dqty, dprice = self._dialog_qty_price(self.device.image, jx, jy)
+                    if dprice > 0 and abs(dprice / dqty - expect) > self.DLG_PRICE_TOLERANCE:
+                        logger.warning(f'MysteryShop: {label}({ax},{ay}) 确认框单价 '
+                                       f'{dprice / dqty:.0f} 与货架价 {expect} 不符'
+                                       f'（多半点开了别的商品），取消不买')
+                        if not self._close_purchase_dialog():
+                            self.popup_stuck = True
+                        return False
+                    logger.info(f'MysteryShop: {label}({ax},{ay}) 单价复核第二遍为 '
+                                f'{dprice / dqty:.0f}，与货架价一致，继续')
 
         # 有些道具的确认框，数量行最右侧还多一个「最大」圆按钮（两个向上箭头）：
         # 点它会把数量直接拉到这次能买的上限（剩 3 次就一次买 3 份）。
@@ -1381,6 +1627,17 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             self.screenshot()
             if self._jade_short_cancel():
                 return False
+            # 「已达上限」：点勾玉键之后，游戏对**持有量到顶**的道具会再拦一道
+            # 「当前持有的XX数量已达上限，是否继续？」，必须点确定才真的成交。
+            # 用户 11-04 定死：只要买道具时出现这个框就点确定，不许空等。
+            # 必须排在 I_MS_JADE_BUY 前面 —— 那个框盖在确认框上时勾玉键仍可能露出来，
+            # 先判勾玉键就会一轮轮点它（点了没反应），白耗到 12 秒超时后判「没买到」，
+            # 用户看到的就是「弹了上限框、脚本没点、道具没买到」。
+            if self._limit_warn_appear():
+                if self._limit_continue():
+                    tries += 1
+                    timer.reset()
+                    continue
             if self.ui_reward_appear_click():
                 break
             if tries >= self.HEISUI_BUY_TRIES:
@@ -1490,6 +1747,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         catalogs = []
 
         # ① 自己的店（第一趟刷新出来的那批，第一趟只识别没买）
+        self.shop_tag = '自己的店'
         items = self._scan_shop(cfg)
         catalogs.append((0, items))
         logger.info(f'MysteryShop: [比价] 自己的店记录 {len(items)} 件')
@@ -1499,6 +1757,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         while idx <= self.COMPARE_MAX_SHOPS:
             if not self.next_one():
                 break
+            self.shop_tag = f'第 {idx} 家好友店'
             items = self._scan_shop(cfg)
             catalogs.append((idx, items))
             logger.info(f'MysteryShop: [比价] 第 {idx} 家记录 {len(items)} 件')
@@ -1672,7 +1931,50 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             return False
         return True
 
-    def _scan_screen(self, cfg) -> list:
+    def _notify_daruma_found(self, image, ax: int, price: int, cfg) -> None:
+        """
+        识别到整只御行达摩就推一条消息（走全局推送通道，和一键协战 / 报错推送同一套）。
+
+        只在 _scan_screen 里、整只的四位价格复核成功之后调用 —— 碎片不会走到这里，
+        价格读不准（复核失败）的也不会，避免推一条「1920 其实是 920」的假消息。
+
+        **与买不买完全解耦**：没勾选御行达摩、或者价格高于上限不买，同样要推 ——
+        用户要的是「店里刷出整只了」这个情报，好自己决定要不要手动上线抢。
+
+        去重：同一次运行里 (店面标签, 列号, 价格) 相同只推一次。扫描是逐屏做的，
+        滚动前后两屏有重叠，同一格必然被识别两次；换店 / 刷新后标签变了，
+        所以同一只在新的一批货里再出现，仍然照推。
+
+        推送失败绝不打断任务：网络、SMTP、没配渠道都只写一行日志。
+        """
+        if not cfg.black_daruma_push_enable:
+            return
+        tag = self.shop_tag
+        key = (tag, self._col_key(ax + 20), int(price))
+        if key in self.daruma_push_seen:
+            logger.info(f'MysteryShop: 整只御行达摩（{tag} {price} 勾玉）这一趟已经推送过，跳过')
+            return
+        self.daruma_push_seen = set(self.daruma_push_seen) | {key}
+
+        cap = cfg.black_daruma_max_price
+        if not cfg.black_daruma:
+            action = '没有勾选「御行达摩」，不会自动买'
+        elif 0 < price <= cap:
+            action = f'不高于上限 {cap}，这一趟会自动买下'
+        else:
+            action = f'高于上限 {cap}，不会自动买 —— 想要请手动上线'
+        content = (f'{datetime.now():%m-%d %H:%M} {tag}\n'
+                   f'整只御行达摩：{price} 勾玉\n'
+                   f'{action}')
+        logger.info(f'MysteryShop: 推送整只御行达摩（{tag} {price} 勾玉）')
+        try:
+            if not self.config.notifier.push(title=self.PUSH_TITLE, content=content, image=image):
+                logger.warning('MysteryShop: 整只御行达摩推送失败，'
+                               '检查「设置 - 推送」是否已启用并配好渠道')
+        except Exception as e:
+            logger.warning(f'MysteryShop: 整只御行达摩推送异常，忽略：{e!r}')
+
+    def _scan_screen(self, cfg, notify: bool = True) -> list:
         """
         识别当前这一屏的勾玉道具，一个都不点。
 
@@ -1684,6 +1986,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         售罄判断对**任意滚动位置**都有效：_count_lines 用模板定位「剩余购买次数」标签行，
         位置跟着画面走，不依赖 8 格固定坐标（早期版本只在顶部那一屏能判，因为用的是
         写死的 O_MS_LEFT_1..8；那 8 个区域在滚动后就对不上了）。
+
+        notify=False 表示「只识别、不推送」：第二趟回程购买会用 _scan_screen 重扫
+        已经记录过的那家店，那里的整只御行达摩在记录阶段就推过一遍了，
+        再推就是重复消息（见 _notify_daruma_found 的去重键）。
         """
         self.screenshot()
         image = self.device.image
@@ -1723,15 +2029,27 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                     continue
                 price = full
                 unit = float(full)
+                # 推送只认「复核成功」的整只：读不准的价格推出去只会误导用户，
+                # 宁可少推一次也不推错。碎片在上面就被分走了，不会走到这里。
+                if notify:
+                    self._notify_daruma_found(image, ax, price, cfg)
             items.append({'kind': kind, 'price': price, 'qty': qty, 'unit': unit,
                           'ax': ax, 'ay': ay, 'tmpl_h': self.HEISUI_H,
-                          'click': self.HEISUI_CLICK, 'check': self.I_MS_CHECK_BLACK})
+                          'click': self.HEISUI_CLICK,
+                          # 整只没有确认框大图素材，传 None 让 _buy_at 退到「画面大改」判弹窗；
+                          # 碎片两份模板都给全（少一份就会「弹窗开着却报没弹」，比价白跑一趟）
+                          'check': None if kind == '御行达摩'
+                                   else (self.I_MS_CHECK_BLACK, self.I_MS_CHECK_BLACK_NEW)})
             self._mark_worthy(kind, price, unit, cfg)
+        # check 也要在这里给全：_buy_recorded 在好友店下单时直接把 check 转给 _buy_at，
+        # 少一份模板就会「弹窗开着却报没弹」，比价白跑一趟。
         for rule, dx, dy, score, click, check, label in (
             (self.I_MS_TAIKO_3, self.TAIKO_3_PRICE_DX, self.TAIKO_3_PRICE_DY,
-             self.TAIKO_3_MIN_SCORE, self.TAIKO_3_CLICK, self.I_MS_CHECK_TAIKO_3, '三星太鼓'),
+             self.TAIKO_3_MIN_SCORE, self.TAIKO_3_CLICK,
+             (self.I_MS_CHECK_TAIKO_3, self.I_MS_CHECK_TAIKO_3_NEW), '三星太鼓'),
             (self.I_MS_TAIKO_4, self.TAIKO_4_PRICE_DX, self.TAIKO_4_PRICE_DY,
-             self.TAIKO_4_MIN_SCORE, self.TAIKO_4_CLICK, self.I_MS_CHECK_TAIKO_4, '四星太鼓'),
+             self.TAIKO_4_MIN_SCORE, self.TAIKO_4_CLICK,
+             (self.I_MS_CHECK_TAIKO_4, self.I_MS_CHECK_TAIKO_4_NEW), '四星太鼓'),
         ):
             got = self._scan_image_items(image, lines, rule, dx, dy, score, click, check, label)
             items += got
@@ -1932,7 +2250,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             logger.warning(f'MysteryShop: [比价] {label} 回不到顶部，放弃购买')
             return 0
         for page in range(self.SCROLL_DOWN_MAX + 1):
-            for cand in self._scan_screen(cfg):
+            # 回程重扫这家店只是为了找那一格下单，整只早在记录阶段推过了，
+            # 这里再推一遍就是纯重复（去重键里的店面标签也换不回来）。
+            for cand in self._scan_screen(cfg, notify=False):
                 if cand['kind'] != label or cand['qty'] != it['qty']:
                     continue
                 if abs(cand['unit'] - it['unit']) > 0.5:
@@ -2153,7 +2473,14 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         点开第 index 格并买下 1 个。成功判据是「出现了获得奖励」。
         没出现就关弹窗，绝不在同一格反复点：
         - 出现「购买金币」（金币不足）窗口 → 点右上角 X 关掉，并中止本商店剩余金币格；
+        - 出现「已达上限」弹窗 → 点确定继续买（见 _limit_continue），不算失败、继续等奖励；
         - 其他情况 → 点弹窗左侧空白关掉。
+
+        **「最大」按钮**：确认框的数量行最右侧可能有双上箭头圆按钮（I_MS_MAX_BUY），
+        点它把这一单直接拉到能买的上限（剩 2 次就一次买 2 份）。勾玉商品那边
+        _buy_at 早就这么做了，金币道具以前漏了 —— 用户 11-04 明确要求补上：
+        出现就点一次，再点金币购买键。只点一次：按钮点完还留在屏幕上，
+        不加标志位每轮循环都会再点，10 次就撞 GameTooManyClickError。
         """
         click = getattr(self, f'C_MS_ITEM_{index}')
         self.click(click)
@@ -2174,6 +2501,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # 正常点一次购买，1~2 秒就出获得奖励；8 秒够用，不必等满 12 秒白耗时间
         timer = Timer(8).start()
         got_reward = False
+        max_clicked = False
         while 1:
             self.screenshot()
             if self.ui_reward_appear_click():
@@ -2188,6 +2516,25 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                     self.popup_stuck = True
                 self.coin_shortage = True
                 return False
+            # 「已达上限」必须排在两个点击判据前面：万一它的确定键也能匹配上
+            # I_UI_CONFIRM_SAMLL，先按文字判定就不会点错按钮。
+            if self._limit_continue():
+                if self.popup_stuck:
+                    # 连点三次确定都没关掉，弹窗还盖在商品上，剩下的格子不用试了
+                    return False
+                timer.reset()
+                continue
+            # 点「最大」只能点一次，理由见方法注释
+            if not max_clicked and self.appear(self.I_MS_MAX_BUY):
+                if self.click(self.I_MS_MAX_BUY, interval=1):
+                    max_clicked = True
+                    # 数量和总价是一格一格跳上去的，等它停稳再往下走
+                    sleep(0.5)
+                    self.screenshot()
+                    logger.info(f'MysteryShop: 第{index}格金币弹窗有「最大」按钮，已一次买满')
+                else:
+                    logger.warning(f'MysteryShop: 第{index}格认出「最大」但没点下去，按数量 1 买')
+                continue
             if self.appear_then_click(self.I_UI_CONFIRM_SAMLL, interval=1):
                 timer.reset()
                 continue
@@ -2198,12 +2545,70 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 break
             sleep(0.5)
 
-        # 3) 没出奖励（金币不足 / 已达上限等）→ 点左侧空白关闭弹窗
+        # 3) 没出奖励（金币不足 / 其他异常）→ 点左侧空白关闭弹窗
         if not got_reward:
             logger.warning(f'MysteryShop: 第{index}格未买到（未出现获得奖励）')
             if not self.close_popup():
                 self.popup_stuck = True
         return got_reward
+
+    def _limit_warn_appear(self, image=None) -> bool:
+        """
+        严格判断屏上是不是「已达上限」弹窗（`当前持有的XX数量已达上限，是否继续？`）。
+
+        **不能直接用 `self.appear(self.O_MS_LIMIT_WARN)`**：OCR 的 `filter()`
+        （`module/ocr/base_ocr.py:254-293`）在「整串拼接后包含关键词」失败时，会退化成
+        **逐字符匹配** —— 只要 keyword（已达上限）里任意一个字出现在某段文字里就算命中。
+
+        11-04 17:50 douji4 实测就是这么误判的：
+            屏上：货架，第 3 格道具名「御行达摩（碎片）」，位置 y231，
+                  正好落在 roi (400,230,480,120) 里
+            OCR ：['逢魔之魂', '御行达摩（辟片）', '88', '30']
+                  OCR [MS_LIMIT_WARN] detected in [1]     ← 命中的是「御行达摩」，就因为含一个「达」
+            结果：close_popup 判定「屏上是已达上限弹窗」→ 不关弹窗直接返回 False
+        而货架本来就摆着御行达摩（碎片）时，这个误判**每一屏都会发生**。
+
+        这里自己取 OCR 结果，要求「已达上限」四个字**连续**出现在同一串文字里，
+        撞上一两个字不算命中。
+        """
+        rule = self.O_MS_LIMIT_WARN
+        if image is None:
+            image = self.device.image
+        results = rule.detect_and_ocr(image, logDisplay=False)
+        if not results:
+            return False
+        joined = ''.join(r.ocr_text for r in results)
+        return self.LIMIT_WARN_KEYWORD in joined
+
+    def _limit_continue(self) -> bool:
+        """
+        「当前持有的XX数量已达上限，是否继续？」—— 点确定继续买，把神秘商人等级顶上去。
+
+        只在金币道具路径出现，时机是**点完金币购买键之后**（用户 11-04 确认）。
+        持有量到顶时游戏会拦一道，点确定才真的扣金币成交；不点就停在弹窗上，
+        后面的格子全废。
+
+        **判据用 OCR 认「已达上限」，不用裁图模板**：弹窗第一行是「当前持有的<道具名>
+        数量已达上限，是否继续？」，道具一换（樱饼/其它）模板就废；第一行折行位置
+        也会跟着道具名长短左右挪，所以 roi 给得比文字本身宽一圈。
+
+        只点确定，**绝不点左边那个「七日内不再提醒」** —— 那是永久改用户的游戏设置。
+        返回 True 表示「认出了这个弹窗」（无论最后有没有点掉），调用方据此
+        reset 计时并跳过本轮的其他点击判据。
+        """
+        if not self._limit_warn_appear():
+            return False
+        logger.warning('MysteryShop: 道具持有量已达上限，点确定继续购买')
+        for i in range(3):
+            self.click(self.C_MS_LIMIT_OK, interval=1)
+            sleep(0.8)
+            self.screenshot()
+            if not self._limit_warn_appear():
+                return True
+            logger.warning(f'MysteryShop: 「已达上限」弹窗还在，重点确定（第 {i + 1} 次）')
+        logger.error('MysteryShop: 「已达上限」弹窗关不掉，本商店剩下的格子不再买')
+        self.popup_stuck = True
+        return True
 
     def close_coin_popup(self, retry: int = 3) -> bool:
         """
@@ -2235,6 +2640,16 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         self.screenshot()
         if self.appear(self.I_MS_NO_COIN):
             return self.close_coin_popup()
+        # 「已达上限」同理：它的确定键多半匹配不上下面那两个模板，点空白之后
+        # 两个都判不存在 => 会被误判成「已经关掉了」，实际弹窗还盖在商品上。
+        # 这里只**判断**、不点确定 —— close_popup 的语义是「关掉」，按下确定等于
+        # 替用户继续付款。勾玉 / 金币路径的弹窗已经在各自循环里处理过了，
+        # 还能走到这里说明是不该自动确认的场合，就地收手最安全。
+        # 判定必须走 _limit_warn_appear，不能用 appear(O_MS_LIMIT_WARN)：后者会因
+        # 货架上「御行达摩」的「达」字误命中，把正常弹窗关不掉（见那个方法的注释）。
+        if self._limit_warn_appear():
+            logger.warning('MysteryShop: 屏上是「已达上限」弹窗，不自动点确定，就地收手')
+            return False
         for i in range(retry):
             self.click(self.C_MS_BLANK)
             sleep(1)
@@ -2280,8 +2695,15 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
           time_of_mystery    第一趟，默认 00:00:00（= 开放日零点跑，与上游的实际行为一致）
           time_of_mystery_2  同一开放日的第二趟，默认 00:00:00（= 不启用，只跑一趟）
 
-        任务结束时的判定：今天这个开放日的第二趟还没到点 → 排到今天第二趟；
-        否则排到下一个开放日的第一趟。跑完第二趟自然就落到后者。
+        本趟是第几趟看 `self.pass_index` —— run() 里由 _which_pass() 按配置记下的状态判定，
+        与钟点无关。所以「下午 / 半夜才手动运行」也能正确接上第二趟：
+
+          本趟是第一趟、且配了第二次时刻 => **一定**排第二趟
+              今天那个时刻还没到   -> 排到那个时刻；
+              已经过了那个时刻     -> 改成「现在 + SECOND_PASS_CATCHUP_MINUTES」补跑，
+                                      绝不因为晚了几分钟就把当天第二趟丢掉；
+              补跑会跨到第二天     -> 跳过（第二天不是开放日，商店已经关了）。
+          其余情况（只配一趟 / 本趟已是第二趟 / 不是开放日）=> 排到下一个开放日的第一趟。
 
         上游的 success 分支这里不用了：它把 target_time 从 time 覆盖成 timedelta
         再去和 time(0,0,0) 比较，那个「00:00:00 表示不使用」的判断恒为 False，
@@ -2292,16 +2714,36 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         second: time = con.time_of_mystery_2
         zero = time(hour=0, minute=0, second=0)
         now = datetime.now()
+        # 非开放日那条早退路径（run() 开头）调的是 next_time(False)，此时 pass_index
+        # 还没算出来，用 None 兜底 —— 会落进最后那段「排到下一个开放日」。
+        pass_index = getattr(self, 'pass_index', None)
 
         if second != zero and first != zero and second <= first:
-            logger.warning('MysteryShop: 第二次运行时间不晚于第一次，第二趟永远不会触发')
+            logger.warning('MysteryShop: 第二次运行时间不晚于第一次，'
+                           '第一趟跑完必然已过点，第二趟会按补跑处理')
 
-        # ① 今天还有第二趟没到点 → 排到今天第二趟
-        if second != zero and now.weekday() in self.OPEN_WEEKDAYS:
+        # ① 本趟是第一趟且配了第二趟 → 一定排第二趟，不看「是不是已经过点」
+        if second != zero and pass_index == self.PASS_FIRST:
             today_second = datetime.combine(now.date(), second)
+            target = None
             if now < today_second:
+                target = today_second
                 logger.info(f'MysteryShop: 今天还有第二趟 {second.strftime("%H:%M:%S")}')
-                self.set_next_run(task='MysteryShop', target=today_second)
+            else:
+                catchup = now + timedelta(minutes=self.SECOND_PASS_CATCHUP_MINUTES)
+                if catchup.date() != now.date():
+                    logger.warning(
+                        f'MysteryShop: 第一趟跑完时已过第二趟时刻 {second.strftime("%H:%M:%S")}，'
+                        f'补跑会跨到第二天（{catchup.strftime("%m-%d %H:%M")}）——'
+                        f'第二天不是开放日，今天的第二趟跳过')
+                else:
+                    target = catchup
+                    logger.info(
+                        f'MysteryShop: 第一趟跑完时已过第二趟时刻 {second.strftime("%H:%M:%S")}，'
+                        f'改为 {catchup.strftime("%H:%M:%S")} 补跑第二趟'
+                        f'（{self.SECOND_PASS_CATCHUP_MINUTES} 分钟后）')
+            if target is not None:
+                self.set_next_run(task='MysteryShop', target=target)
                 raise TaskEnd('MysteryShop')
 
         # ② 排到下一个开放日的第一趟
