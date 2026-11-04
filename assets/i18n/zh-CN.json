@@ -431,5 +431,7 @@
   "kaiko_4_max_price": "└ 数值小于等于才买（勾玉）",
   "Kaiko 4 Max Price": "└ 数值小于等于才买（勾玉）",
   "black_daruma_push_enable": "识别到整只御行达摩时推送",
-  "Black Daruma Push Enable": "识别到整只御行达摩时推送"
+  "Black Daruma Push Enable": "识别到整只御行达摩时推送",
+  "mystery_shop_enable": "启用神秘商店",
+  "mystery_shop_date": "神秘商店已跑日期"
 }

@@ -35,7 +35,16 @@ class AssistBattleAccountInfo(AccountInfo):
         default=DateTime.fromisoformat('2023-01-01 00:00:00'),
         description='jade_complete_time_help',
     )
-    hide_fields = dynamic_hide('jade_status')
+    # 本开放日「这个号已经把神秘商店跑完了」的日期。和一键协战那个 last_complete_time
+    # 完全分开记：协战 0 点刷新、神秘商店只有周三周六开，用同一个时间戳会出现
+    # 「协战已完成 → 整号跳过 → 商店永远跑不到」。这个日期只给「要不要为商店专门切号」用。
+    mystery_shop_date: str = Field(
+        default='',
+        title='神秘商店已跑日期',
+        description='脚本自动维护：记录本号最近一次跑完神秘商店的日期（YYYY-MM-DD）。'
+        '正常使用不要手改。',
+    )
+    hide_fields = dynamic_hide('jade_status', 'mystery_shop_date')
 
 
 class Weekday(str, Enum):
@@ -125,6 +134,20 @@ class AssistBattleDailyConfig(BaseModel):
     )
     courtyard_affairs_enable: bool = Field(default=True)
     store_sign_enable: bool = Field(default=True)
+    # 神秘商店是「调用别人的任务」，配置全部在【神秘商店】任务页里，这里只有一个开关。
+    # 之所以单独一个字段、不并进 store_sign_enable：商店签到是每天都有，神秘商店只有
+    # 周三/周六开放，两者开关必须能分开。
+    mystery_shop_enable: bool = Field(
+        default=False,
+        title='启用神秘商店',
+        description='调用「神秘商店」任务本体：买什么、价格上限、整只达摩推送，'
+        '全部在【神秘商店】任务里配置，这里不用再设一遍。\n'
+        '只在周三 / 周六（商店开放日）执行。商店 00:00 刷新、当天 24:00 结束，'
+        '整天都能买，所以**不受**「部分日常功能仅晚上执行」那个时段限制 —— '
+        '协战这一轮在凌晨跑也会进店。\n'
+        '每个账号当天只跑一次：同一开放日不管协战跑几轮，第二轮起自动跳过；'
+        '没跑过的号即使协战已经打完，也会切过去把商店跑掉。',
+    )
     find_jade_enable: bool = Field(
         default=False,
         description='标记有勾协的账号且可推送',

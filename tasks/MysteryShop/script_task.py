@@ -58,6 +58,33 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 让 117 宽的蓝票模板和 40 宽的黑碎模板都能稳定归到正确的那一列。
     LEFTCOUNT_COL_TOL = 115
 
+    # ---------- 「整格变暗」= 这件道具你买不了 ----------
+    # 和「剩余购买次数」是两套正交信号：买不了的格子照样写着「剩余购买次数：2」，
+    # OCR 读得出来、读得还对，只有亮度变了。所以售罄判据管不了它，得单独判亮度。
+    # 亮度基准取底部固定栏「本日购买次数 : N」那行白字 —— 不受滚动、商品状态、
+    # 店铺归属影响，两张不同商店的截图实测都是 204.0 / 204.3。
+    BRIGHT_REF_ROI = (120, 625, 280, 40)
+    # 相对亮度阈值。跨 27 张商店截图实测是干净的双峰分布：可买 0.97~1.01，
+    # 买不了 0.35~0.36，中间一个过渡值都没有，取 0.6 两边各留 0.25 余量。
+    CELL_DIM_RATIO = 0.6
+    # 基准本身太暗（黑屏、截图失败）时比值不可信，保守放行，宁可多试一次也别漏买。
+    BRIGHT_REF_MIN = 60.0
+
+    # ---------- 价格牌上的货币：勾玉 vs 魂玉 ----------
+    # 神秘商店里带「特惠」角标的货是**魂玉**标价（紫），红勾玉买不到它。
+    # 价格牌左边那个小货币图标只有 24×36，而读价 ROI 从图标右缘之后才开始
+    # （PRICE_DX=56），OCR 只认数字 —— 7 魂玉和 7 勾玉读出来都是 7，
+    # 不判颜色就会当成「7 勾玉」写进比价池，回程真会去点它。
+    # 取景框按「价格数字框左上角」定位：实测图标中心恒在 (px-16, py+8)，
+    # 四列实测 239/464/689/914 × 271/531，与推算逐格吻合。
+    CURRENCY_DX, CURRENCY_DY = -31, -13
+    CURRENCY_W, CURRENCY_H = 30, 42
+    # 魂玉判定：紫色像素数下限 + 相对红色像素的倍数。
+    # 实测两种图标各约 530 个高饱和像素，红勾玉格紫色近 0、魂玉格红色近 0，
+    # 两条同时成立才算魂玉；看不清（墨色淡、截图糊）一律按勾玉放行。
+    SOUL_MIN_PIXELS = 60
+    SOUL_OVER_JADE = 1.3
+
     # ---------- 「同种商品只买一次」 ----------
     # 历史展示名 -> 比价池里的种类名。buy_daruma_screen 现在直接传全名
     # （御行达摩碎片/御行达摩），这张表留着兜住旧入口（_buy_heisui_at 的默认参数、
@@ -339,14 +366,39 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     COMPARE_MAX_SHOPS = 30
     # 切店成功的判据：画面平均像素差。和 _scroll_down_one_page 用同一把尺
     # （实测 16416 切店前后差 20 以上，点不动时差 0.x）。
-    SHOP_SWITCH_DIFF = 5.0
+    # **取 10.0 不是 5.0**：11-04 douji1 回程退店，3 次里第一次只差 7.9 就判「切换成功」，
+    # 实际那一下没切（应当是切店动画的中间帧），于是「以为退了 3 家、只退了 2 家」，
+    # 在错误的店里翻两屏找 48 的黑碎，白跑一趟。healthy 切换实测 11.9 / 13.6 / 13.7 / 21.5，
+    # 7.9 是唯一的离群值，10.0 正好把它挡在外面。
+    SHOP_SWITCH_DIFF = 10.0
+    # 差值达标还不够：切店动画中途也能冲到 10 以上。达标后再等 0.4 秒比一次，
+    # 画面静止（相邻两次截图差 < 这个值）才算真的切完了。
+    SHOP_SETTLE_DIFF = 3.0
     SHOP_SWITCH_TRIES = 3
     SHOP_SWITCH_TIMEOUT = 20
 
     def run(self):
+        if not self.run_shop_body():
+            self.next_time(False)
+        self.next_time(True)
+
+    def run_shop_body(self) -> bool:
+        """
+        任务本体：导航进商城 -> 逛店 -> 领店铺奖励 -> 回商城页。
+
+        **不碰调度**：不 set_next_run、不 reload 配置、不 raise TaskEnd，
+        只返回跑没跑。给别的任务（一键协战的「启用神秘商店」）直接调用。
+
+        这样分工才干净：
+          本任务管「今天该不该跑、什么时候跑」——OPEN_WEEKDAYS + next_time；
+          调用方只管「我现在想跑一趟」，不用跟着本任务内部改动一起改。
+        调用方拿到 False 就什么都不用做（不是开放日），拿到 True 表示已经跑完一趟。
+
+        :return: True = 今天确实是开放日、本趟已跑完；False = 今天不是开放日，什么都没做
+        """
         if self.start_time.weekday() not in self.OPEN_WEEKDAYS:
             logger.warning('Today is not MysteryShop day')
-            self.next_time(False)
+            return False
         self.goto_page(page_mall)
         self.ui_click(self.I_ME_ENTER, self.I_MS_SHARE)
         logger.info('Enter MysteryShop')
@@ -399,8 +451,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         self.shop_reward()
         logger.info('Exit MysteryShop')
         self.back_mall()
-
-        self.next_time(True)
+        return True
 
     def _which_pass(self) -> int:
         """
@@ -526,11 +577,18 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         self.screenshot()
         if not self.appear(self.I_MS_NEXT):
+            # 0.5 秒复判是原有的（切店动画、箭头淡入都要时间）。再加一手关弹窗：
+            # 商品详情 / 礼包 / 数量选择弹窗会把右箭头整个盖住 —— 那是「看不见」，
+            # 不是「没有下一家」。11-04 douji1 就因此把 6 家店逛成 4 家。
+            # 判据用「三条全不见」：只剩左箭头说明这是最后一家，真的没有下一家，
+            # 别在这儿白白连点 3 次空白、多等 3 秒。
             sleep(0.5)
             self.screenshot()
-            if self.appear(self.I_MS_NEXT):
-                pass
-            else:
+            if not self.appear(self.I_MS_NEXT) and not self._in_shop():
+                if self.close_popup():
+                    sleep(0.3)
+                    self.screenshot()
+            if not self.appear(self.I_MS_NEXT):
                 logger.info('No next friend')
                 return False
 
@@ -730,11 +788,49 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
     def _in_shop(self) -> bool:
         """
-        当前是否还在神秘商店页。I_MS_NEXT（切下一个好友）在所有商店页都有，
-        I_MS_SHARE 只有自己的商店有，任一命中即算在店内。
+        当前是否还在神秘商店页。三条素材任一命中即算在店内：
+
+          I_MS_NEXT   —— 切下一个好友（右箭头），除**最后一家**外都有；
+          I_MS_SHARE  —— 分享按钮，只有**自己的店**有；
+          I_MS_BEFORE —— 切上一个好友（左箭头），除自己的店外都有。
+
+        **必须把左箭头一起算上**：以前只查前两条，于是只要右箭头那一刻不在画面上
+        （最后一家店、被弹窗或商品压住、切店动画还没结束）就判成「已离开商店」——
+        而最后一家店本来就没有右箭头，这个判断对它是恒错的。
+        11-04 douji1 就栽在这里：下滑后 `_in_shop()` 为 False，本店记录当场中断，
+        同一瞬间 `next_one()` 也报「No next friend」，整趟只逛到第 4 家。
+        三个箭头/按钮各自缺失的场合不同，取并集才能覆盖全部店面。
         """
         self.screenshot()
-        return self.appear(self.I_MS_NEXT) or self.appear(self.I_MS_SHARE)
+        return (self.appear(self.I_MS_NEXT) or self.appear(self.I_MS_SHARE)
+                or self.appear(self.I_MS_BEFORE))
+
+    def _recover_shop(self) -> bool:
+        """
+        滑动之后发现不在商店页时，先抢救一次再放弃。
+
+        两种**假**「离开商店」都能救回来：
+          ① 滑动起点落在商品格上，被游戏当成点击，弹出了商品详情/礼包弹窗 ——
+             弹窗把两侧箭头一起盖住，`_in_shop()` 自然为 False，关掉弹窗就回来了；
+          ② 页面切换/滑动动画还没结束 —— 等 0.8 秒再看。
+
+        真退出了商店（滑动手势被当成「关闭」手势）就救不回来，返回 False 交给调用方中断。
+
+        **不要无脑调 close_popup()**：它在没弹窗时会连点 3 次空白、每次 sleep 1 秒，
+        白等 3 秒还可能点到货架上的商品。所以先判有没有弹窗再关。
+        """
+        if self._in_shop():
+            return True
+        self.screenshot()
+        if self.appear(self.I_MS_COIN_BUY) or self.appear(self.I_UI_CONFIRM_SAMLL):
+            if self.close_popup() and self._in_shop():
+                logger.info('MysteryShop: 关掉弹窗后仍在商店页，继续')
+                return True
+        sleep(0.8)
+        if self._in_shop():
+            logger.info('MysteryShop: 等一拍后仍在商店页，继续')
+            return True
+        return False
 
     def _buy_screen(self, shop_config: ShopConfig) -> int:
         """把当前这一屏能买的都买一遍，返回买到的件数。"""
@@ -827,7 +923,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         hits = [(hit, keys[i] if keys[i] in usable else None)
                 for i, hit in enumerate(hits)]
         hits = [(hit, key) for hit, key in hits
-                if self._cell_buyable(image, lines, *hit, key=key)]
+                if self._cell_buyable(image, lines, *hit, key=key,
+                                      price_dxdy=(price_dx, price_dy))]
         if not hits:
             logger.info(f'MysteryShop: 当前这一屏没有可买的{label}')
             return 0
@@ -1742,23 +1839,27 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         **全程不分享**（用户要求）。第二趟也不刷新：每天的 5 勾玉刷新是第一趟的事，
         这里要的是「直接比较每个商店的价格」，多刷一次只会把已经记过的价格作废。
+
+        **金币道具在记录阶段就地买掉**（`_scan_shop(buy_coin=True)`，每店顶部一屏）：
+        它不参与比价，价格固定，早买晚买一样；拖到回程会漏掉「没进 plan 的店」。
+        第一趟刷新出来那批金币格也由此补买 —— 第一趟 ④ 只识别不买。
         """
         cfg = con.shop_config
         catalogs = []
 
         # ① 自己的店（第一趟刷新出来的那批，第一趟只识别没买）
         self.shop_tag = '自己的店'
-        items = self._scan_shop(cfg)
+        items = self._scan_shop(cfg, buy_coin=True)
         catalogs.append((0, items))
         logger.info(f'MysteryShop: [比价] 自己的店记录 {len(items)} 件')
 
-        # ② 好友店逐个只记录
+        # ② 好友店逐个只记录（金币道具顺路买掉，它不参与比价）
         idx = 1
         while idx <= self.COMPARE_MAX_SHOPS:
             if not self.next_one():
                 break
             self.shop_tag = f'第 {idx} 家好友店'
-            items = self._scan_shop(cfg)
+            items = self._scan_shop(cfg, buy_coin=True)
             catalogs.append((idx, items))
             logger.info(f'MysteryShop: [比价] 第 {idx} 家记录 {len(items)} 件')
             idx += 1
@@ -1780,20 +1881,35 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         bought = self._buy_plan(plan, catalogs[-1][0], cfg)
         logger.info(f'MysteryShop: [比价] 回程共买到 {bought} 件')
 
-    def _scan_shop(self, cfg) -> list:
-        """把当前这家店从顶部扫到底，只识别不买，返回整店的道具清单。"""
+    def _scan_shop(self, cfg, buy_coin: bool = False) -> list:
+        """
+        把当前这家店从顶部扫到底，识别整店的道具清单。
+
+        buy_coin=True 时，回顶之后先买一遍**金币道具**再开始记录。
+        为什么金币道具要在这里买（第二趟专用）：
+          - 它不参与跨店比价（价格是固定档，越比越亏时间），`_scan_screen` 也不会把它
+            放进 items，买它不会污染 catalogs；
+          - 它只能用顶部 8 格的固定坐标识别（I_MS_COIN_1..8 / C_MS_ITEM_1..8），
+            所以必须放在 _scroll_to_top() 成功之后、下滑之前；
+          - 第一趟刷新出来那批金币格没人买（第一趟 ④ 只识别不买），第二趟自己店
+            这一趟正好补上，好友店的金币格也一并处理。
+        11-04 的回归就是这里漏了：拆两趟时旧代码「好友店走 run_shop」被换成
+        _scan_shop，金币道具整条路断掉，好友店摆着金币道具也不买（douji1 实测）。
+        """
         # 每进一家店清空「剩余次数」记忆表：上一家店的库存次数不能套到这一家。
         self._reset_times_memo()
         if not self._scroll_to_top():
             logger.error('MysteryShop: [比价] 回不到顶部，本店记录为空')
             return []
+        if buy_coin:
+            self.buy_coin_items(cfg)
         page = self._scan_screen(cfg)
         self._log_found(page, '第 1 屏')
         items = page
         for i in range(self.SCROLL_DOWN_MAX):
             if not self._scroll_down_one_page():
                 break
-            if not self._in_shop():
+            if not self._recover_shop():
                 logger.error('MysteryShop: [比价] 下滑后离开商店页，本店记录中断')
                 break
             page = self._scan_screen(cfg)
@@ -1875,7 +1991,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         return self.times_memo[key], True
 
     def _cell_buyable(self, image, lines, x: int, y: int, w: int, h: int,
-                      key=None) -> bool:
+                      key=None, dim_check: bool = False,
+                      price_dxdy=None) -> bool:
         """
         给定一件商品的命中框，判断它所在那一格还能不能买。
 
@@ -1893,6 +2010,15 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         key=(列, 种类) 时启用**跨屏记忆**（见 times_memo 的注释）：找上方标签行失败
         ——通常是这一行被下滑到标题栏底下、标签只剩半截——就查这张表，把这家店上一屏
         读到的同格次数拿来用。没有记录时仍按「空位」跳过，不做猜测。
+
+        dim_check=True 时再叠一道**亮度闸门**（只给扫描传，下单路径不传）：
+        整格变暗到约 35% 表示「这件你买不了」，此时剩余次数照样写着 1/2，
+        光看 OCR 只会把买不了的货记进比价池、回程白跑一趟。见 _cell_dimmed。
+
+        price_dxdy=(dx, dy) 时再叠一道**货币闸门**：魂玉标价的格（带「特惠」角标，
+        多为碎片/达摩）直接跳过，见 _cell_currency。dx/dy 是该种类价格数字框
+        相对 (x, y+h) 的偏移，各道具不同（黑碎 56/45、蓝票 52/44、太鼓 52/40），
+        所以由调用方传，不在这里猜。
         """
         cx = x + w / 2.0
         best, best_d = None, None
@@ -1929,7 +2055,93 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             logger.info(f'MysteryShop: 格子({x},{y}) 剩余购买次数 {times} '
                         f'{"(读不到，按售罄)" if times < 0 else "(已售罄)"}，跳过这一格')
             return False
+        if dim_check and self._cell_dimmed(image, best):
+            # 只有扫描会走到这里。购买路径不传 dim_check：能不能买最终让弹窗说话，
+            # 别让一道亮度判据挡住一笔本来能成的交易。
+            logger.info(f'MysteryShop: 格子({x},{y}) 整格变暗，这件你买不了'
+                        f'（「剩余购买次数 {times}」是商店库存，不是你的次数），跳过这一格')
+            return False
+        if price_dxdy is not None:
+            px, py = x + price_dxdy[0], y + h + price_dxdy[1]
+            if self._cell_currency(image, (px, py)) == 'soul':
+                logger.info(f'MysteryShop: 格子({x},{y}) 标价是魂玉不是勾玉'
+                            f'（读价只认数字，7 魂玉和 7 勾玉都是 7），跳过这一格')
+                return False
         return True
+
+    @staticmethod
+    def _bright(image, roi) -> float:
+        """
+        取 ROI 里最亮 3% 像素的均值，代表「白字/金边有多亮」。
+
+        不用区域均值：格子背景（暗色货架）占掉绝大多数像素，会把差异稀释干净 ——
+        整格变暗时文字亮度从 202 掉到 72，区域均值却只差 2.1。旧版正是拿这个
+        「平均差 2.1」的结论否掉了亮度判据（见 _count_lines 的注释），其实测错了对象：
+        变暗体现在**文字和价格牌**上，不在黑达摩图标上。
+        """
+        x, y, w, h = roi
+        patch = image[y:y + h, x:x + w]
+        if patch.size == 0:
+            return 0.0
+        values = patch.reshape(-1, patch.shape[-1]).mean(axis=1)
+        k = max(1, int(len(values) * 3 / 100))
+        return float(np.sort(values)[-k:].mean())
+
+    def _bright_ref(self, image) -> float:
+        """整屏亮度基准：底部「本日购买次数 : N」那行固定白字。"""
+        return self._bright(image, self.BRIGHT_REF_ROI)
+
+    def _cell_dimmed(self, image, line) -> bool:
+        """
+        这一格是不是「整格变暗」——游戏用这个表示这件道具你买不了。
+
+        判据是**相对**亮度：标签行亮度 ÷ 底部基准亮度 < CELL_DIM_RATIO。
+        用比值而不是绝对亮度，是为了扛住两种情况：
+          ① 模态弹窗把整屏压暗（实测出现过 ref=52 的截图）——分子分母一起掉，
+             比值不变（仍 0.97），不会把能买的判成不能买；
+          ② 不同模拟器/截图的整体曝光差异。
+        基准太暗（< BRIGHT_REF_MIN，通常是截图失败或黑屏）时返回 False，保守放行。
+        """
+        ref = self._bright_ref(image)
+        if ref < self.BRIGHT_REF_MIN:
+            return False
+        return self._bright(image, (line[0], line[1], line[2], line[3])) \
+            < ref * self.CELL_DIM_RATIO
+
+    def _cell_currency(self, image, price_roi) -> str:
+        """
+        价格牌左边那个货币图标是勾玉还是魂玉。返回 'jade' / 'soul'。
+
+        为什么必须判：神秘商店里带「特惠」角标的货是魂玉标价，红勾玉买不了它。
+        而读价只 OCR 数字（PRICE_DX 把图标排除在 ROI 之外），7 魂玉读出来就是 7，
+        照样能过「≤ 上限」那道闸门，于是被当勾玉货写进比价池 —— 回程会真去点它。
+        实机截图实测：那格「御行达摩(碎片) 7」是紫色魂玉，比上限 48 低了 41，
+        整轮被当成最便宜的黑碎。
+
+        判据用颜色不用模板：图标只有 24×36，且 I_MS_JADE_BUY 是确认框里 49×45
+        的大图标，尺寸对不上（货架全图实测最高只有 0.587，阈值 0.85），
+        它判的是「确认框开没开」，判不了货币种类。
+        实测两种图标各约 530 个高饱和像素，红勾玉紫近 0、魂玉红近 0，分得很开。
+
+        取景框越界或看不清时返回 'jade'（放行）：宁可多试一次，也不因判据失手漏买。
+        """
+        if image is None or getattr(image, 'size', 0) == 0:
+            return 'jade'
+        px, py = int(price_roi[0]), int(price_roi[1])
+        x, y = px + self.CURRENCY_DX, py + self.CURRENCY_DY
+        w, h = self.CURRENCY_W, self.CURRENCY_H
+        if x < 0 or y < 0 or x + w > image.shape[1] or y + h > image.shape[0]:
+            return 'jade'
+        # OAS 内部图像是 RGB（device.image），不是 OpenCV 的 BGR —— 转错通道
+        # 红色和紫色会互换，正好把魂玉判成勾玉、勾玉判成魂玉。
+        hsv = cv2.cvtColor(image[y:y + h, x:x + w], cv2.COLOR_RGB2HSV)
+        hue, sat, val = hsv[..., 0], hsv[..., 1], hsv[..., 2]
+        purple_mask = (hue >= 125) & (hue <= 160) & (sat > 110) & (val > 90)
+        red_mask = ((hue <= 10) | (hue >= 170)) & (sat > 140) & (val > 120)
+        purple, red = int(purple_mask.sum()), int(red_mask.sum())
+        if purple >= self.SOUL_MIN_PIXELS and purple > red * self.SOUL_OVER_JADE:
+            return 'soul'
+        return 'jade'
 
     def _notify_daruma_found(self, image, ax: int, price: int, cfg) -> None:
         """
@@ -2008,7 +2220,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         for ax, ay in positions:
             box_h = self.HEISUI_H
             key = ('达摩', self._col_key(ax)) if daruma_key_ok else None
-            if not self._cell_buyable(image, lines, ax, ay - box_h, box_h, box_h, key=key):
+            if not self._cell_buyable(image, lines, ax, ay - box_h, box_h, box_h,
+                                      key=key, dim_check=True,
+                                      price_dxdy=(self.PRICE_DX, self.PRICE_DY)):
                 continue
             ok, price, qty, unit = self._heisui_unit_price(image, ax, ay, price_max)
             if not ok:
@@ -2119,7 +2333,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         blue_key_ok = len(blue_cols) == len(set(blue_cols))
         for i, (x, y, w, h) in enumerate(cells):
             key = ('神秘咒符', blue_cols[i]) if blue_key_ok else None
-            if not self._cell_buyable(image, lines, x, y, w, h, key=key):
+            if not self._cell_buyable(image, lines, x, y, w, h, key=key, dim_check=True,
+                                      price_dxdy=(self.BLUE_PRICE_DX, self.BLUE_PRICE_DY)):
                 sold_out += 1
                 continue
             ax, ay = x, y + h
@@ -2156,7 +2371,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         items = []
         for i, (x, y, w, h) in enumerate(hits):
             key = (label, cols[i]) if key_ok else None
-            if not self._cell_buyable(image, lines, x, y, w, h, key=key):
+            if not self._cell_buyable(image, lines, x, y, w, h, key=key, dim_check=True,
+                                      price_dxdy=(price_dx, price_dy)):
                 continue
             ay = y + h
             price = self._price_in_box(
@@ -2266,7 +2482,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 break
             if not self._scroll_down_one_page():
                 break
-            if not self._in_shop():
+            if not self._recover_shop():
                 break
         logger.warning(f'MysteryShop: [比价] 目标店里没再找到 {label} 单价 {it["unit"]:.0f}')
         return 0
@@ -2294,8 +2510,24 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 diff = float(np.abs(before.astype(np.int16)
                                     - self.device.image.astype(np.int16)).mean())
                 if diff >= self.SHOP_SWITCH_DIFF:
-                    logger.info(f'MysteryShop: [比价] {label}切换成功（画面变化 {diff:.1f}）')
-                    return True
+                    # 差值够了还不算数：切店动画的中间帧也能冲到 10 以上，那时判成功
+                    # 就等于把「切到一半」当成「切完了」，后面按家数算的索引全歪。
+                    # 再等 0.4 秒比一次，画面静止才认为真切完（11-04 的 7.9 假成功就是
+                    # 中间帧，见 SHOP_SWITCH_DIFF 的注释）。
+                    prev = self.device.image.copy()
+                    sleep(0.4)
+                    self.screenshot()
+                    settle = float(np.abs(prev.astype(np.int16)
+                                          - self.device.image.astype(np.int16)).mean())
+                    if settle < self.SHOP_SETTLE_DIFF:
+                        logger.info(f'MysteryShop: [比价] {label}切换成功'
+                                    f'（画面变化 {diff:.1f}，静止差 {settle:.1f}）')
+                        return True
+                    if timer.reached():
+                        logger.warning(f'MysteryShop: [比价] {label}后画面一直没停，'
+                                       f'第 {attempt + 1} 次重试')
+                        break
+                    continue
                 if timer.reached():
                     logger.warning(f'MysteryShop: [比价] {label}后画面没变，第 {attempt + 1} 次重试')
                     break
@@ -2333,7 +2565,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 return True
             logger.info(f'MysteryShop: 商品列表不在顶部，上滑回顶（第 {i + 1} 次）')
             self._swipe_and_diff(self.S_MS_SCROLL_UP)
-            if not self._in_shop():
+            if not self._recover_shop():
                 # 上滑把商店关掉过（顶部继续下拉），此时后面所有点击坐标都不可信
                 logger.error('MysteryShop: 上滑后离开了商店页，停止本商店')
                 return False

@@ -12,6 +12,7 @@ from tasks.RealmRaid.script_task import ScriptTask as RealmRaidScriptTask
 from tasks.DailyTrifles.script_task import ScriptTask as DailyTriflesScriptTask
 from tasks.KekkaiUtilize.script_task import ScriptTask as KekkaiUtilizeScriptTask
 from tasks.KekkaiUtilize.page import page_guild_realm
+from tasks.MysteryShop.script_task import ScriptTask as MysteryShopScriptTask
 from tasks.GameUi.page import page_main, page_assist_battle, page_mall
 from tasks.WantedQuests.assets import WantedQuestsAssets
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationType
@@ -42,6 +43,9 @@ class ScriptTask(
     DAILY_END = time(23, 0)
     # 本号是否打觉醒, 由 run_one_account 在切号前设置; True 表示跟随全局开关
     current_evozone_enable = True
+    # 当前正在执行的账号对象, 由 run_one_account 在切号后设置, 跑完清空。
+    # run_current_account 没有 account 参数, 判断「本号要不要跑神秘商店」要靠它。
+    _current_account = None
 
     def run(self):
         self.conf = self.config.model.assist_battle
@@ -291,6 +295,7 @@ class ScriptTask(
         # 本号是否打觉醒: 只改内存里的运行期标记, 不动配置也不落盘, 跑完恢复
         target_evozone = self.evozone_enabled(account)
         self.current_evozone_enable = target_evozone
+        self._current_account = account
         try:
             (
                 evozone_done,
@@ -303,6 +308,7 @@ class ScriptTask(
             ) = self.run_current_account()
         finally:
             self.current_evozone_enable = True
+            self._current_account = None
         self.mark_account_done(
             account, evozone_final, realmraid_final, jade_checked, jade_flag
         )
@@ -359,7 +365,13 @@ class ScriptTask(
         return self.FIND_JADE_UNKNOWN
 
     def is_account_done_today(self, account) -> bool:
-        """联合判定: 协战按 0 点、勾协按 5/18 点各看各的时间戳, 都完成才跳过"""
+        """联合判定: 协战按 0 点、勾协按 5/18 点各看各的时间戳, 都完成才跳过
+
+        还有一项独立的待办：神秘商店。它只有周三/周六开放、且只算「本号本开放日跑过没有」，
+        跟协战/勾协的时间戳没关系。不加这一条就会出现最典型的一种漏跑 ——
+        上午那一轮把协战打满了，晚上 18 点这一轮所有号都被判成「今天已完成」整号跳过，
+        商店一个号都进不去。
+        """
         if not self.conf.optimize_config.skip_completed_account_enable:
             return False
         battle_enabled = (
@@ -373,6 +385,9 @@ class ScriptTask(
         if battle_enabled and account.last_complete_time.date() != now.date():
             return False
         if jade_enabled and account.jade_complete_time <= self._jade_refresh_point(now):
+            return False
+        # 协战、勾协都做完了，但商店还没跑 → 这个号仍然要切过去
+        if self.mystery_shop_pending(account):
             return False
         return True
 
@@ -542,6 +557,14 @@ class ScriptTask(
             self.run_store_sign()
             self.goto_page(page_main)
 
+        # 神秘商店：开关 + 晚间窗口 + 开放日 + 本号本开放日还没跑，四样齐了才进店。
+        # 刻意不看 daily_gate_open —— 那个条件是「觉醒协战还有剩余次数」，而商店最常见的
+        # 执行时机恰恰是协战已经打完之后那一轮，套上去就会永远跑不到。
+        if self.mystery_shop_pending(self._current_account):
+            if self.run_mystery_shop():
+                self.mark_mystery_shop_done()
+            self.goto_page(page_main)
+
         # 寻找勾协
         if self.conf.daily_config.find_jade_enable:
             jade_flag = self.find_jade()
@@ -594,6 +617,97 @@ class ScriptTask(
             jade_flag,
             jade_checked,
             consignment_ticket,
+        )
+
+    #  ---------------------------------------------------------------------------------------------------------------
+    #  神秘商店：只做「什么时候该跑、跑完记一笔」，怎么买全部由 MysteryShop 自己决定
+    #  ---------------------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _mystery_shop_today() -> str:
+        return datetime.now().strftime('%Y-%m-%d')
+
+    def mystery_shop_pending(self, account) -> bool:
+        """本号这一轮还要不要进神秘商店。
+
+        三个条件全部满足才算待办：
+          ① 开关打开；
+          ② 今天是商店开放日（周三 / 周六，取自 MysteryShop.OPEN_WEEKDAYS，不在这里重写一遍）；
+          ③ 本号本开放日还没跑过（mystery_shop_date != 今天）。
+
+        **刻意不看 daily_window**（用户 11-04 明确）：商店在开放日 00:00 刷新、当天 24:00
+        结束，整天都能买；而协战这一轮的启动时刻由 scheduler.server_update 决定 —— 它不等于
+        09:00 时，module/config/config.py:360 会无视 success_interval，直接排到「明天同一时刻」
+        （实测：今天 11:28 跑完，next_run 被写成次日 06:05，而不是 23:28）。也就是协战永远在
+        早上 06:05 启动，落不进 18~23 点窗口，套上 daily_window 等于一次都进不了店。
+
+        「当天只运行一次」不靠时间窗，靠 ③ 的日期戳：同一开放日不管协战跑几轮，
+        第二轮起 mystery_shop_date 已是今天，自动跳过。将来若把 server_update 调成 09:00
+        让 12 小时间隔真正生效（一天两轮），这条照样只让第一轮进店。
+
+        不看 account.last_complete_time：那个是协战的时间戳，协战打完不代表商店跑过。
+        """
+        if account is None:
+            return False
+        if not self.conf.daily_config.mystery_shop_enable:
+            return False
+        if date.today().weekday() not in MysteryShopScriptTask.OPEN_WEEKDAYS:
+            return False
+        return getattr(account, 'mystery_shop_date', '') != self._mystery_shop_today()
+
+    def run_mystery_shop(self) -> bool:
+        """跑一趟神秘商店本体，跑成了返回 True。
+
+        只调 run_shop_body()，不调 run() —— 后者内部靠 raise TaskEnd 收尾，
+        而且会改 MysteryShop 自己的 next_run。用 body 版就等于「顺手替它跑一趟」，
+        它的日程表、第二趟判定全都不受影响。
+
+        TaskEnd 必须在这里吞掉：万一 MysteryShop 内部哪天又抛了 TaskEnd，
+        冒到 run_switch_account 会让整个一键协战提前结束，后面的号全都不跑。
+        """
+        logger.hr('Run MysteryShop for current account', 3)
+        try:
+            task = MysteryShopScriptTask(self.config, self.device)
+            done = task.run_shop_body()
+        except RequestHumanTakeover:
+            # 需要人工介入的一律往上抛，和 run_own_wanted_quests 的处理保持一致
+            raise
+        except TaskEnd as e:
+            logger.warning(f'MysteryShop 提前结束（TaskEnd），本号商店按已完成处理: {e}')
+            done = True
+        except Exception as e:
+            # 导航超时（GamePageUnknownError）/ 点击过密（GameTooManyClickError）都落这里：
+            # 商店这一趟放弃，但这个号后面的协战、以及下一个号都要继续跑。
+            # 清一次点击记录，否则「同一按钮 ≥10 次」的历史会带进下一个号，一进去就炸。
+            logger.error(f'MysteryShop 执行异常，本号商店跳过: {e!r}')
+            try:
+                self.device.click_record_clear()
+            except Exception as cleanup_error:
+                logger.warning(f'清理点击记录失败，不影响继续: {cleanup_error!r}')
+            done = False
+        # run_shop_body 里可能 reload 过配置（第一趟会写 first_pass_date），
+        # self.conf 还指着旧 model，重新取一次，后面写账号字段才不会丢
+        self.conf = self.config.model.assist_battle
+        return done
+
+    def mark_mystery_shop_done(self) -> None:
+        """把「本号今天商店跑完了」写进配置。
+
+        写失败只影响效率（下一轮会再进一次店），不影响正确性，所以不抛异常。
+        """
+        account = self._current_account
+        if account is None:
+            return
+        current = self._current_model_account(account)
+        if current is None:
+            logger.warning('mark_mystery_shop_done: 账号不在当前配置里，跳过记录')
+            return
+        current.mystery_shop_date = self._mystery_shop_today()
+        self.config.save()
+        logger.info(
+            'MysteryShop of %s-%s done for %s, it will not be entered again today',
+            account.character,
+            account.svr,
+            current.mystery_shop_date,
         )
 
     def find_jade(self):
