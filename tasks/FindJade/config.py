@@ -3,9 +3,8 @@ from typing import Any, Dict
 
 from pydantic import Field, BaseModel, ConfigDict, model_validator, model_serializer, ValidationError
 
-from deploy.logger import logger
 from tasks.Component.SwitchAccount.switch_account_config import AccountInfo
-from tasks.Component.config_base import ConfigBase, DateTime, Time
+from tasks.Component.config_base import ConfigBase, DateTime, Time, dynamic_hide
 from tasks.Component.config_scheduler import Scheduler
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationSelectMask, CooperationType
 
@@ -54,6 +53,23 @@ class InviteInfo(BaseModel):
         return self.name != "" and self.name is not None
 
 
+class FindJadeAccountInfo(AccountInfo):
+    """寻找勾协的账号: 额外记下本时段的检测结果, 供中断重启后合并推送
+
+    照搬一键协战 AssistBattleAccountInfo 的做法: 每个号查完立刻把状态写回配置文件,
+    进程被杀 / 人工接管 / 重启都还在; 下一轮被跳过的号再把状态读回来一起推送。
+    """
+
+    # 本时段确认过的勾协状态: none=没查过, 其余为 无勾/普勾/现勾/普勾+现勾
+    jade_status: str = Field(default='none', description='脚本自动维护的勾协状态')
+    # 本时段的检测时间, 与 WQ 完成用的 last_complete_time 分开记
+    jade_complete_time: DateTime = Field(
+        default=DateTime.fromisoformat("2023-01-01 00:00:00"),
+        description='脚本自动维护的勾协检测时间',
+    )
+    hide_fields = dynamic_hide('jade_status', 'jade_complete_time')
+
+
 class FindJadeConfig(ConfigBase):
     # GUI / Web 回写的都是字符串，不开赋值校验的话 Time 字段会原样存成 str，
     # 而 Time 的序列化器要求 time 对象（v.strftime），一保存整个配置就崩。
@@ -69,6 +85,10 @@ class FindJadeConfig(ConfigBase):
     run_time_2: Time = Field(default=Time(hour=18, minute=5, second=0))
     # 跑完把发现勾协的号推到邮箱
     push_result_enable: bool = Field(default=True)
+    # 本时段(5点/18点刷新)已推送过的结果快照, 用来保证「一个时间段算一趟」:
+    # 同一时段重启多次, 内容没变就不重发; 查出新勾协才补发一份完整清单。
+    jade_push_state: str = Field(default='', description='脚本自动维护的推送快照')
+    hide_fields = dynamic_hide('jade_push_state')
 
 
 class FindJade(ConfigBase):
@@ -77,7 +97,7 @@ class FindJade(ConfigBase):
     # 邀请人员信息
     invite_info_list: list[InviteInfo] = None
     # 小号信息
-    sup_account_list: list[AccountInfo] = None
+    sup_account_list: list[FindJadeAccountInfo] = None
 
     def get_invite_name(self, ctype: CooperationType):
         for info in self.invite_info_list:
@@ -144,23 +164,21 @@ class FindJade(ConfigBase):
                         data[list_name].append(item_type())
 
         validator_list('invite_info_list', v, InviteInfo, invite_info_count)
-        validator_list('sup_account_list', v, AccountInfo, sup_account_count)
+        validator_list('sup_account_list', v, FindJadeAccountInfo, sup_account_count)
 
         return v
 
     @model_serializer()
-    def serializer_model(self, value: Any) -> Dict[str, Any]:
-        properties = self.__dict__
+    def serializer_model(self, info) -> Dict[str, Any]:
+        # 必须把 context 转发给子模型, 否则账号/配置上的 dynamic_hide 只对落盘生效、
+        # 给 GUI 时隐藏字段会漏出来(一键协战 config.py:248-265 是同一写法)。
+        context = info.context if info is not None else None
         data = {}
 
         def v_dump(v):
-            try:
-                return v.model_dump()
-            except AttributeError as e:
-                logger.error(e)
-                return v
+            return v.model_dump(context=context) if isinstance(v, BaseModel) else v
 
-        for key, value in properties.items():
+        for key, value in self.__dict__.items():
             if isinstance(value, list):
                 for index, v in enumerate(value):
                     data[f'{key}_{index + 1}'] = v_dump(v)

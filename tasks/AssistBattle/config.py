@@ -11,7 +11,7 @@ from pydantic import (
 )
 
 from tasks.Component.config_scheduler import Scheduler
-from tasks.Component.config_base import ConfigBase, DateTime, dynamic_hide
+from tasks.Component.config_base import ConfigBase, DateTime, MultiLine, dynamic_hide
 from tasks.Component.SwitchAccount.switch_account_config import AccountInfo
 from tasks.RichMan.config import ConsignShikigami
 from tasks.RichMan.mall.shikigami_map import SHIKIGAMI_NAMES
@@ -181,6 +181,29 @@ class AssistBattleDailyConfig(BaseModel):
         default=ConsignShikigami(SHIKIGAMI_NAMES[0]),
         description='要购买的联动式神碎片',
     )
+    # 给指定好友点赞：默认关闭；好友组找不到会再去「跨区好友」找一遍
+    friend_like_enable: bool = Field(
+        default=False,
+        title='给指定好友点赞',
+        description='开启后每次执行一键协战时，进入好友界面给下方列表里的好友点赞；'
+        '已经点过（橙黄色）的会自动跳过。好友组找不到会再去「跨区好友」找一遍，'
+        '都没有就跳过，不影响其它日常。',
+    )
+    friend_like_names: MultiLine = Field(
+        default='',
+        title='要点赞的好友名',
+        description='每行一个好友名，空行自动忽略。中文识别偶尔有个别字误差，'
+        '程序会在点进好友后用聊天区名字再核对一次，防止点错人。',
+    )
+
+    @property
+    def friend_like_names_v(self) -> list[str]:
+        """多行好友名 -> 列表（与 DailyTrifles 捐赠碎片名单同款写法）"""
+        return [
+            line.strip()
+            for line in self.friend_like_names.split('\n')
+            if line.strip()
+        ]
 
 
 class AssistBattleOptimizeConfig(BaseModel):

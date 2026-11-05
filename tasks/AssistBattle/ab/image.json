@@ -1,0 +1,83 @@
+[
+  {
+    "itemName": "friends_goto_assist_battle",
+    "imageName": "ab_friends_goto_assist_battle.png",
+    "roiFront": "1205,539,40,72",
+    "roiBack": "1185,507,75,147",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友界面前往协战界面"
+  },
+  {
+    "itemName": "present_world_jade_assist_1",
+    "imageName": "ab_present_world_jade_assist_1.png",
+    "roiFront": "310,121,30,28",
+    "roiBack": "91,109,263,330",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "现世勾协位置1"
+  },
+  {
+    "itemName": "present_world_jade_assist_2",
+    "imageName": "ab_present_world_jade_assist_2.png",
+    "roiFront": "597,123,30,28",
+    "roiBack": "380,111,257,357",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "现世勾协位置2"
+  },
+  {
+    "itemName": "present_world_jade_assist_3",
+    "imageName": "ab_present_world_jade_assist_3.png",
+    "roiFront": "881,124,30,28",
+    "roiBack": "667,111,251,328",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "现世勾协位置3"
+  },
+  {
+    "itemName": "friend_like_off",
+    "imageName": "ab_like_off.png",
+    "roiFront": "617,140,28,31",
+    "roiBack": "611,134,40,43",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友界面点赞图标-未点赞(白色)"
+  },
+  {
+    "itemName": "friend_like_on",
+    "imageName": "ab_like_on.png",
+    "roiFront": "617,140,28,31",
+    "roiBack": "611,134,40,43",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友界面点赞图标-已点赞(橙黄色)"
+  },
+  {
+    "itemName": "friend_group_expanded",
+    "imageName": "ab_group_expanded.png",
+    "roiFront": "464,171,17,10",
+    "roiBack": "450,155,45,45",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友分组标题行-展开态(倒三角)，表示当前展开的是同区好友"
+  },
+  {
+    "itemName": "friend_group_folded",
+    "imageName": "ab_group_folded.png",
+    "roiFront": "466,167,11,18",
+    "roiBack": "450,155,45,45",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "好友分组标题行-折叠态(右三角)，表示当前展开的是跨区好友"
+  },
+  {
+    "itemName": "friend_cross_folded",
+    "imageName": "ab_group_folded.png",
+    "roiFront": "466,587,11,18",
+    "roiBack": "450,570,45,45",
+    "method": "Template matching",
+    "threshold": 0.8,
+    "description": "跨区好友分组标题行-折叠态(右三角)"
+  }
+]

@@ -1,10 +1,14 @@
 import numpy as np
 from datetime import date, datetime, time, timedelta
+from difflib import SequenceMatcher
 from time import sleep
 
 from module.base.timer import Timer
 from module.logger import logger
-from module.exception import RequestHumanTakeover, TaskEnd
+from module.exception import (
+    GamePageUnknownError, GameStuckError, GameTooManyClickError,
+    RequestHumanTakeover, TaskEnd,
+)
 from tasks.Component.SwitchAccount.switch_account import SwitchAccount
 from tasks.EvoZone.config import Layer, KirinType
 from tasks.EvoZone.script_task import ScriptTask as EvoZoneScriptTask
@@ -13,7 +17,8 @@ from tasks.DailyTrifles.script_task import ScriptTask as DailyTriflesScriptTask
 from tasks.KekkaiUtilize.script_task import ScriptTask as KekkaiUtilizeScriptTask
 from tasks.KekkaiUtilize.page import page_guild_realm
 from tasks.MysteryShop.script_task import ScriptTask as MysteryShopScriptTask
-from tasks.GameUi.page import page_main, page_assist_battle, page_mall
+from tasks.GameUi.page import page_main, page_assist_battle, page_mall, page_friends
+from tasks.GameUi.assets import GameUiAssets
 from tasks.WantedQuests.assets import WantedQuestsAssets
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationType
 from tasks.WantedQuests.script_task import ScriptTask as WantedQuestsScriptTask
@@ -193,6 +198,19 @@ class ScriptTask(
         """输出协战结果: 今日总进度只列次数不正常的账号"""
         logger.hr('AssistBattle Result', 2)
         push_content = []
+        # 切换失败的账号单独列出, 避免用户去日志里翻
+        failed = getattr(self, 'switch_failed_accounts', [])
+        if failed:
+            push_content.append(f"切换失败（{len(failed)}个账号）：")
+            for account in failed:
+                message = self.format_account_name({
+                    'account': account.account,
+                    'character': account.character,
+                    'svr': account.svr,
+                    'apple_or_android': account.apple_or_android,
+                }, '**')
+                logger.info(message)
+                push_content.append(message)
         # 当天已完成的账号不算"本次执行", 只在下面的总进度里体现
         executed = [result for result in results if not result['skipped']]
         executed_lines = self.format_executed_results(executed)
@@ -241,6 +259,8 @@ class ScriptTask(
         """切换账号并执行协战任务"""
         accounts = [account for account in self.conf.account_list if account.is_valid()]
         results = []
+        # 最终切换失败的账号(重试后仍失败, 或未开启重试时首轮失败), 供推送使用
+        self.switch_failed_accounts = []
         if not accounts:
             logger.info('No AssistBattle account configured, exit')
         else:
@@ -263,6 +283,7 @@ class ScriptTask(
                         still_failed.append(account)
                 failed_accounts = still_failed
             if failed_accounts:
+                self.switch_failed_accounts = list(failed_accounts)
                 logger.warning(
                     'Still failed to switch %s account(s): %s',
                     len(failed_accounts),
@@ -565,6 +586,28 @@ class ScriptTask(
                 self.mark_mystery_shop_done()
             self.goto_page(page_main)
 
+        # 给指定好友点赞（默认关闭；找不到/失败只打 warning，不影响其它日常）
+        # try/finally 保证无论中途停在哪个子页面，都先回主界面再往下走
+        if self.conf.daily_config.friend_like_enable:
+            try:
+                self.run_friend_like()
+            except RequestHumanTakeover:
+                raise
+            except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as e:
+                # 设备层异常（点太密 / 卡住 / 认不出页面）不能打断本号后面的找勾协和下一个号；
+                # finally 仍会回主界面，这里只负责吞掉异常 + 清掉点击历史
+                logger.warning('好友点赞执行异常，本号跳过点赞并清理点击记录: %r', e)
+                self.device.click_record_clear()
+            finally:
+                # 回主界面失败也不能把异常冒出去，否则后面的找勾协、下一个号全不跑
+                try:
+                    self.goto_page(page_main)
+                except RequestHumanTakeover:
+                    raise
+                except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as e:
+                    logger.warning('好友点赞后回主界面失败，交给后续任务自行导航: %r', e)
+                    self.device.click_record_clear()
+
         # 寻找勾协
         if self.conf.daily_config.find_jade_enable:
             jade_flag = self.find_jade()
@@ -709,6 +752,346 @@ class ScriptTask(
             account.svr,
             current.mystery_shop_date,
         )
+
+    # ----------------------------------------------------------------------
+    #  给指定好友点赞
+    #  界面实证(16512, 11-05)：好友组与跨区组互斥展开，标题行固定不随列表滚动；
+    #  点赞图标位置固定 (617,140)，白/橙两态模板互认仅 0.075。
+    #  中文 OCR 有误字(「过山时雨」读成「过山时而」)，故模糊匹配 + 点开后二次核对。
+    # ----------------------------------------------------------------------
+    FRIEND_LIKE_MAX_SCROLL = 20
+    FRIEND_LIKE_TIMEOUT = 60
+    # 回顶专用上限，与扫描上限分开。从庭院进好友页时游戏会恢复上次滚动位置，
+    # 11-05 实测最坏停在列表底部（190 个同区好友约 40 屏），20 次短滑回不到顶，
+    # 顶部好友整屏漏掉。回顶不怕滑过头：到顶后 Q搜索 会一直稳定可见，
+    # 所以放宽上限只影响耗时，不影响「是否漏扫」。扫描上限仍保持 20。
+    FRIEND_LIKE_MAX_TO_TOP = 60
+    # 列表区域滑前/滑后的平均像素差小于此值 = 这次滑动没让列表动 = 到顶或到底。
+    # 沿用 MysteryShop.SCROLL_MIN_DIFF 的量级；只裁左侧列表 ROI，避开右侧聊天区动画。
+    FRIEND_LIKE_EDGE_DIFF = 5.0
+    FRIEND_LIKE_SWIPE_SETTLE = 0.8
+    # 列表最顶部那一行的「Q搜索」搜索框是判「真的到顶」的硬标志。
+    # 16512 实测(11-05)：反向下滑 4 次到顶时 OCR 稳定读到 Q搜索(0.99)，
+    # 起始/中部各帧完全没有；而到顶那一帧画面差反而最大(30.4)，
+    # 所以回顶不能只靠像素差，否则会滑满 20 次仍判不出到顶、漏掉顶部好友。
+    FRIEND_LIKE_TOP_MARKER = '搜'
+    FRIEND_LIKE_TOP_BOX_Y = 60
+
+    def _friend_list_crop(self):
+        x, y, w, h = self.O_FRIEND_LIST.roi
+        return self.device.image[y:y + h, x:x + w].copy()
+
+    @staticmethod
+    def _friend_list_diff(before, after) -> float:
+        if before is None or after is None or before.shape != after.shape:
+            return 255.0
+        return float(np.abs(
+            before.astype(np.int16) - after.astype(np.int16)
+        ).mean())
+
+    def _swipe_friend_list(self, swipe) -> float:
+        """滑一次，返回列表区域滑前/滑后的画面差（MysteryShop._swipe_and_diff 同款）"""
+        self.screenshot()
+        before = self._friend_list_crop()
+        self.swipe(swipe)
+        self.device.click_record_clear()
+        sleep(self.FRIEND_LIKE_SWIPE_SETTLE)
+        self.screenshot()
+        diff = self._friend_list_diff(before, self._friend_list_crop())
+        logger.info('好友列表 %s 后画面变化 %.1f', swipe.name, diff)
+        return diff
+
+    def _friend_list_at_edge(self, swipe) -> bool:
+        """这次滑动有没有把列表推到边界。
+
+        疑似没动时再抓连续两帧复核，避免把「惯性里的一次短暂停顿」当成到底
+        （EasySecret.wait_list_stable 的同类做法）。
+        """
+        if self._swipe_friend_list(swipe) >= self.FRIEND_LIKE_EDGE_DIFF:
+            return False
+        self.screenshot()
+        first = self._friend_list_crop()
+        sleep(0.3)
+        self.screenshot()
+        second = self._friend_list_crop()
+        return self._friend_list_diff(first, second) < self.FRIEND_LIKE_EDGE_DIFF
+
+    def _friend_list_at_top(self) -> bool:
+        """列表是否真的在顶部：只有最顶部才有一行「Q搜索」搜索框。
+
+        复用 O_FRIEND_LIST 的 Full OCR，不新增素材。Q搜索 也可能被读成
+        「Q搜素」「0搜索」，故只取「搜」字并限制文本长度与位置：
+        实测它在列表 ROI 内 y≈15，中部/底部不会出现。
+        """
+        self.screenshot()
+        results = self.O_FRIEND_LIST.detect_and_ocr(self.device.image)
+        if not results:
+            return False
+        for result in results:
+            text = self._normalize_friend_name(result.ocr_text)
+            if self.FRIEND_LIKE_TOP_MARKER not in text or len(text) > 6:
+                continue
+            if result.box[0, 1] <= self.FRIEND_LIKE_TOP_BOX_Y:
+                return True
+        return False
+
+    def _friend_list_to_top(self) -> bool:
+        """把列表拉回顶部：以「Q搜索」出现为硬标志，连续两帧画面静止兜底。
+
+        进好友页时列表常停在上次的滚动位置（切号/切组都会保留），
+        不先回顶就会漏掉排在顶部的好友。兜底只防 OCR 偶发读不出，
+        不额外滑动、也不把「滑动没让列表动」单独当成到顶。
+        """
+        still = 0
+        for _ in range(self.FRIEND_LIKE_MAX_TO_TOP):
+            if self._friend_list_at_top():
+                logger.info('好友列表已回到顶部（看到 Q搜索 搜索框）')
+                return True
+            diff = self._swipe_friend_list(self.S_FRIEND_LIST_UP)
+            still = still + 1 if diff < self.FRIEND_LIKE_EDGE_DIFF else 0
+            if still >= 2:
+                logger.info('好友列表已回到顶部（连续两帧画面静止，Q搜索 未读出）')
+                return True
+        logger.warning('好友列表回顶次数用完，没看到 Q搜索，顶部好友可能扫不到')
+        return False
+
+    @staticmethod
+    def _normalize_friend_name(text) -> str:
+        return str(text or '').replace(' ', '').replace('　', '').strip()
+
+    @classmethod
+    def _friend_name_match(cls, ocr_text, target: str) -> bool:
+        a = cls._normalize_friend_name(ocr_text)
+        b = cls._normalize_friend_name(target)
+        if not a or not b:
+            return False
+        # 分组标题(含 / 或冒号)与「5小时前」这类时间文本不是好友名
+        if any(ch in a for ch in '/:：') or a.endswith('前'):
+            return False
+        if a == b or b in a or a in b:
+            return True
+        return SequenceMatcher(None, a, b).ratio() >= 0.65
+
+    def _friend_list_hits(self, pending: set) -> list:
+        """当前帧左侧列表里匹配到的 (目标名, 点击x, 点击y)"""
+        results = self.O_FRIEND_LIST.detect_and_ocr(self.device.image)
+        if not results:
+            return []
+        hits = []
+        for result in results:
+            box = result.box
+            x = int(
+                box[0, 0] + self.O_FRIEND_LIST.roi[0]
+                + (box[1, 0] - box[0, 0]) / 2
+            )
+            y = int(
+                box[0, 1] + self.O_FRIEND_LIST.roi[1]
+                + (box[2, 1] - box[0, 1]) / 2
+            )
+            for name in pending:
+                if self._friend_name_match(result.ocr_text, name):
+                    hits.append((name, x, y))
+                    break
+        return hits
+
+    FRIEND_LIKE_NAME_CONFIRM = 6
+
+    def _verify_friend_chat_name(self, target: str) -> bool:
+        """点进好友后，等右侧资料区顶部名字变成目标名（最多 6 帧 × 0.3s）。
+
+        不用「固定 sleep 一次 + 读一帧」：界面切换有动画，可能读到上一个好友的名字，
+        轻则误跳过、重则点错人的赞。也不依赖选中行的黄色外圈 —— 那圈位置随行变化、
+        颜色又接近界面金色装饰，用可直接 OCR 的文本判据更稳。
+        """
+        for _ in range(self.FRIEND_LIKE_NAME_CONFIRM):
+            self.screenshot()
+            if self._friend_name_match(
+                self.O_FRIEND_CHAT_NAME.ocr(self.device.image), target
+            ):
+                return True
+            sleep(0.3)
+        return False
+
+    def _friend_like_state(self) -> str:
+        """重新截图后判点赞图标状态：on / off / unknown。
+
+        白橙两态互认虽只有 0.075，切页动画帧仍可能让橙态漏检、白态误命中。
+        两态同时命中或都不命中一律算「认不清」，绝不在状态不明时点 (617,140)
+        —— 当天点赞不可逆，重复点的后果未实测过。
+        """
+        self.screenshot()
+        on = self.appear(self.I_FRIEND_LIKE_ON)
+        off = self.appear(self.I_FRIEND_LIKE_OFF)
+        if on and not off:
+            return 'on'
+        if off and not on:
+            return 'off'
+        logger.warning(
+            '点赞图标状态不明（白态=%s，橙态=%s），不点击，放弃本次点赞', off, on
+        )
+        return 'unknown'
+
+    def _like_current_friend(self) -> str:
+        """返回 liked / already / failed。点完必须看到橙黄态才算成功。
+
+        已点赞（on）直接跳过，绝不因为「点过赞」反复重试；
+        每次判定都重新截图，点击后立即清点击记录，避免同一坐标累计触发过密异常。
+        """
+        state = self._friend_like_state()
+        if state == 'on':
+            return 'already'
+        if state == 'unknown':
+            return 'failed'
+        for attempt in range(1, 3):
+            clicked = self.appear_then_click(self.I_FRIEND_LIKE_OFF)
+            self.device.click_record_clear()
+            if not clicked:
+                logger.warning('第 %d 次点赞时白态图标已不匹配，放弃', attempt)
+                return 'failed'
+            sleep(0.8)
+            state = self._friend_like_state()
+            if state == 'on':
+                return 'liked'
+            if state == 'unknown':
+                return 'failed'
+            if attempt < 2:
+                logger.info('第 %d 次点赞后图标仍是白态，再试一次', attempt)
+        logger.warning('连续 2 次点赞后图标仍是白态，放弃，避免重复消耗当天点赞')
+        return 'failed'
+
+    def _ensure_friend_group_expanded(self) -> bool:
+        """确保当前展开的是同区好友组（判「到了」不判「点了」）"""
+        self.screenshot()
+        if self.appear(self.I_FRIEND_GROUP_EXPANDED):
+            return True
+        if self.appear(self.I_FRIEND_GROUP_FOLDED):
+            self.appear_then_click(
+                self.I_FRIEND_GROUP_FOLDED, action=self.C_FRIEND_GROUP_SWITCH
+            )
+            sleep(1.0)
+            self.screenshot()
+            return bool(self.appear(self.I_FRIEND_GROUP_EXPANDED))
+        logger.warning('好友分组状态认不出来，跳过点赞')
+        return False
+
+    def _switch_to_cross_group(self) -> bool:
+        """同区找完还没齐 -> 展开跨区好友组"""
+        self.screenshot()
+        if not self.appear(self.I_FRIEND_CROSS_FOLDED):
+            return bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
+        self.appear_then_click(
+            self.I_FRIEND_CROSS_FOLDED, action=self.C_CROSS_GROUP_SWITCH
+        )
+        sleep(1.0)
+        self.screenshot()
+        return bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
+
+    def _log_friend_scan_timeout(self, label: str, timer: Timer, rounds: int, pending: set) -> None:
+        """扫描被超时掐断时留痕：只看日志就能分清「扫完了」和「没扫完」"""
+        logger.warning(
+            '好友点赞（%s组）扫描被超时掐断，未扫完：已用 %.1fs/%ss，'
+            '滚动 %d/%d 次，剩余 %d 人未查：%s',
+            label, timer.current(), self.FRIEND_LIKE_TIMEOUT,
+            rounds, self.FRIEND_LIKE_MAX_SCROLL,
+            len(pending), '、'.join(sorted(pending)),
+        )
+
+    def _search_friend_group(self, pending: set, label: str) -> None:
+        """在当前展开的分组里滚动找人；找到就核对名字、点赞、移出 pending。
+
+        每组自带独立计时器，同区滚满也不会把跨区的时间吃光；
+        画面不再变化就提前收手，不做无用的空滑。
+        每个出口都留一条日志，标明是「扫完了」还是「被上限/超时掐断」。
+        """
+        timer = Timer(self.FRIEND_LIKE_TIMEOUT).start()
+        for scroll_count in range(1, self.FRIEND_LIKE_MAX_SCROLL + 1):
+            if not pending:
+                logger.info('好友点赞（%s组）名单已全部处理完，扫描结束', label)
+                return
+            if timer.reached():
+                self._log_friend_scan_timeout(label, timer, scroll_count - 1, pending)
+                return
+            self.screenshot()
+            for name, x, y in self._friend_list_hits(pending):
+                if name not in pending:
+                    continue
+                self.device.click(x=x, y=y, control_name='friend_pick')
+                self.device.click_record_clear()
+                sleep(0.6)
+                self.screenshot()
+                if not self._verify_friend_chat_name(name):
+                    logger.warning('点赞跳过：点开后名字对不上，目标=%s', name)
+                    continue
+                result = self._like_current_friend()
+                if result == 'liked':
+                    logger.info('已给好友点赞 [%s]（%s组）', name, label)
+                elif result == 'already':
+                    logger.info('好友 [%s] 已点过赞，跳过', name)
+                else:
+                    logger.warning('好友 [%s] 点赞后没变成黄色，跳过', name)
+                pending.discard(name)
+                if not pending:
+                    logger.info('好友点赞（%s组）名单已全部处理完，扫描结束', label)
+                    return
+            if timer.reached():
+                self._log_friend_scan_timeout(label, timer, scroll_count - 1, pending)
+                return
+            if self._friend_list_at_edge(self.S_FRIEND_LIST_DOWN):
+                logger.info(
+                    '好友列表（%s组）已经到底，提前结束滚动：第 %d/%d 次滑动，'
+                    '剩余 %d 人未找到',
+                    label, scroll_count, self.FRIEND_LIKE_MAX_SCROLL, len(pending),
+                )
+                return
+        logger.warning(
+            '好友点赞（%s组）滚动次数用尽 %d/%d，列表未必到底，'
+            '剩余 %d 人未查：%s',
+            label, self.FRIEND_LIKE_MAX_SCROLL, self.FRIEND_LIKE_MAX_SCROLL,
+            len(pending), '、'.join(sorted(pending)),
+        )
+
+    def run_friend_like(self) -> bool:
+        """给名单里的好友点赞：同区滚到底 -> 切跨区回顶再滚到底 -> 都没有就放弃。
+
+        局部失效返回 False、正常跑完返回 True（哪怕一个都没找到），
+        绝不抛异常打断协战主流程。
+        """
+        names = self.conf.daily_config.friend_like_names_v
+        if not names:
+            logger.warning('「给指定好友点赞」已开启，但好友名列表是空的')
+            return False
+        try:
+            if self.get_current_page() != page_friends:
+                self.goto_page(page_friends)
+        except RequestHumanTakeover:
+            # 需要人工介入的一律往上抛，别吞
+            raise
+        except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as error:
+            # 上游范本 KekkaiUtilize:655；导航失败只是本号不点赞，不能打断协战
+            logger.warning('进入好友界面失败，跳过点赞: %r', error)
+            self.device.click_record_clear()
+            return False
+        self.screenshot()
+        if not self.appear(GameUiAssets.I_CHECK_FRIENDS):
+            logger.warning('没能确认进入好友界面，跳过点赞')
+            return False
+
+        pending = set(names)
+        if not self._ensure_friend_group_expanded():
+            return False
+        # 进好友页时列表常停在上次滚动的位置（切号/切组都会保留），先拉回顶部再扫
+        self._friend_list_to_top()
+        self._search_friend_group(pending, '同区')
+        if pending:
+            if self._switch_to_cross_group():
+                self._friend_list_to_top()
+                self._search_friend_group(pending, '跨区')
+            else:
+                logger.warning('切不到跨区好友分组，放弃剩余好友')
+        if pending:
+            logger.warning('以下好友没找到，放弃点赞：%s', '、'.join(sorted(pending)))
+        logger.info('好友点赞完成：%d/%d', len(names) - len(pending), len(names))
+        return True
 
     def find_jade(self):
         """寻找勾协并标记，返回 无勾/普勾/现勾/未知"""

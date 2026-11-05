@@ -1,0 +1,16 @@
+[
+  {
+    "itemName": "friend_list_down",
+    "roiFront": "300,480,20,20",
+    "roiBack": "300,300,20,20",
+    "mode": "default",
+    "description": "好友列表向下滚动(上滑)"
+  },
+  {
+    "itemName": "friend_list_up",
+    "roiFront": "300,300,20,20",
+    "roiBack": "300,480,20,20",
+    "mode": "default",
+    "description": "好友列表向上滚动(下滑)，切组后用于把列表拉回顶部"
+  }
+]

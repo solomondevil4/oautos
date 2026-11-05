@@ -1,5 +1,5 @@
 import importlib
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from time import sleep
 
 from module.base.timer import Timer
@@ -22,46 +22,65 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
     FIND_JADE_SPECIAL = "现勾"
     FIND_JADE_BOTH = "普勾+现勾"   # 同一个号三格里同时有普勾和现勾
     FIND_JADE_UNKNOWN = "未知"
+    # 只有这几种算「有勾」, 需要出现在推送里
+    JADE_HAS = (FIND_JADE_NORMAL, FIND_JADE_SPECIAL, FIND_JADE_BOTH)
+    # 悬赏封印的游戏刷新点, 与脚本实际运行时刻(run_time_1/2)无关
+    JADE_REFRESH_HOURS = (5, 18)
 
     def run(self):
-        self.fade_conf = self.config.find_jade
+        self.fade_conf = self.config.model.find_jade
 
-        found = []    # 本次查出有勾协的号 (账号, 类型), 只有普勾/现勾, 无勾的不记
+        found = []    # 本轮查出有勾协的号 (账号, 类型)
+        resumed = []  # 本时段此前已记录、本轮被跳过的号
 
-        for accountInfo in self.fade_conf.sup_account_list:
-            logger.info("start %s-%s ", accountInfo.character, accountInfo.svr)
-            if not self.is_need_login(accountInfo):
-                logger.warning("%s Skipped last Login Time:%s", accountInfo.character, accountInfo.last_complete_time)
-                continue
-            suc = SwitchAccount(self.config, self.device, accountInfo).switchAccount()
-            if not suc:
-                logger.warning("switch to %s-%s Failed", accountInfo.character, accountInfo.svr)
-                continue
-            # 必须早于 WQ: WQ 会把协作任务做完, 做完之后就再也看不出原本有没有勾
-            flag = self.detect_jade()
-            if flag in (self.FIND_JADE_NORMAL, self.FIND_JADE_SPECIAL, self.FIND_JADE_BOTH):
-                found.append((accountInfo, flag))
-            #
-            wq = self.CreatObjectFromModule("WantedQuests", config=self.config, device=self.device)
-            wq.fade_conf = self.fade_conf
+        try:
+            for accountInfo in self.fade_conf.sup_account_list:
+                logger.info("start %s-%s ", accountInfo.character, accountInfo.svr)
+                if not self.is_need_login(accountInfo):
+                    logger.warning("%s Skipped last Login Time:%s", accountInfo.character, accountInfo.last_complete_time)
+                    # 跳过不等于丢弃: 从配置文件读回本时段确认过的勾协状态, 一起推送
+                    flag = self.saved_jade_flag(accountInfo)
+                    if flag in self.JADE_HAS:
+                        resumed.append((accountInfo, flag))
+                    continue
+                suc = SwitchAccount(self.config, self.device, accountInfo).switchAccount()
+                if not suc:
+                    logger.warning("switch to %s-%s Failed", accountInfo.character, accountInfo.svr)
+                    continue
+                # 必须早于 WQ: WQ 会把协作任务做完, 做完之后就再也看不出原本有没有勾
+                flag = self.detect_jade()
+                # 逐号落盘: 后面 WQ 或进程出任何问题, 这个号的结果都还在配置文件里。
+                # 返回值是合并后的最终状态(同一时段重查时不会被「无勾」冲掉)。
+                flag = self.record_jade_result(accountInfo, flag)
+                logger.info("%s-%s 勾协状态: %s", accountInfo.character, accountInfo.svr, flag)
+                if flag in self.JADE_HAS:
+                    found.append((accountInfo, flag))
+                #
+                wq = self.CreatObjectFromModule("WantedQuests", config=self.config, device=self.device)
+                wq.fade_conf = self.fade_conf
 
+                try:
+                    wq.run()
+                except TaskEnd as e:
+                    logger.warning("%s-%s TaskEnd", accountInfo.character, accountInfo.svr)
+                    # 更新配置文件中的时间
+                    self.fade_conf.update_account_login_history(accountInfo)
+                    self.save_config()
+                    continue
+                except RequestHumanTakeover as e:
+                    raise
+                except Exception as e:
+                    logger.error(e)
+                    self.next_run("FindJade", success=False)
+        finally:
+            # 中断(人工接管 / 异常)也把已查到的结果推走; 重启后快照变了会补发完整的一份。
+            # 推送本身出错不能盖掉原始异常。
             try:
-                wq.run()
-            except TaskEnd as e:
-                logger.warning("%s-%s TaskEnd", accountInfo.character, accountInfo.svr)
-                # 更新配置文件中的时间
-                self.fade_conf.update_account_login_history(accountInfo)
-                self.save_config()
-                continue
-            except RequestHumanTakeover as e:
-                raise
+                self.push_result(found, resumed)
             except Exception as e:
-                logger.error(e)
-                self.next_run("FindJade", success=False)
-        self.push_result(found)
+                logger.error('push_result failed: %s', e)
         self.next_run("FindJade", success=True)
         raise TaskEnd("FindJade")
-        pass
 
     def detect_jade(self) -> str:
         """切号后看悬赏封印有没有勾协, 返回 无勾/普勾/现勾/普勾+现勾/未知"""
@@ -165,27 +184,160 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
         platform = '安卓' if accountInfo.apple_or_android else '苹果'
         return f'{accountInfo.account}-{platform}-{accountInfo.svr}-{accountInfo.character}'
 
-    def push_result(self, found) -> None:
-        """只推有勾协的号: 逐个带 普勾/现勾/普勾+现勾, 无勾的号一概不列
+    def current_conf(self):
+        """从当前 config.model 重取配置, 防止中途 reload 后把结果写进旧对象"""
+        return self.config.model.find_jade
 
-        没有勾协就整封邮件都不发 —— 用户明确: 不需要通知完没完成,
-        没有勾协的也不用通知。格式照搬一键协战「多号任务完成」那封。
+    def current_account(self, accountInfo):
+        """按 账号+服务器+角色名 找回当前 model 里的账号对象"""
+        for candidate in self.current_conf().sup_account_list or []:
+            if (
+                candidate.character == accountInfo.character
+                and candidate.svr == accountInfo.svr
+                and candidate.account == accountInfo.account
+            ):
+                return candidate
+        return None
+
+    def record_jade_result(self, accountInfo, flag: str) -> str:
+        """查完立刻逐号写回配置文件, 中断 / 重启 / 人工接管都不丢
+
+        同一键协战 mark_account_done 的做法。「未知」表示悬赏页没打开,
+        不能当成无勾记, 下一趟重查。返回最终采用的状态供推送使用。
         """
-        if not self.fade_conf.find_jade_config.push_result_enable:
+        if flag == self.FIND_JADE_UNKNOWN:
+            return flag
+        current = self.current_account(accountInfo)
+        if current is None:
+            logger.warning(
+                'record_jade_result: %s-%s not found in current config model',
+                accountInfo.character, accountInfo.svr,
+            )
+            return flag
+        flag = self.merge_jade_flag(current, flag)
+        current.jade_status = flag
+        current.jade_complete_time = datetime.now()
+        self.save_config()
+        return flag
+
+    def merge_jade_flag(self, current, flag: str) -> str:
+        """同一时段重复检测时, 别让一次「页面没打开 / 协作已被 WQ 打掉」把结果冲掉
+
+        中断常发生在 WQ 已邀请之后: 重启重查时勾协格子已经空了, 直接覆盖成「无勾」
+        就会把之前确实查到的勾协弄丢。只合并本时段(jade_complete_time 晚于刷新点)的记录。
+        """
+        if current.jade_complete_time <= self.jade_refresh_point(datetime.now()):
+            return flag
+        old = current.jade_status
+        if old not in self.JADE_HAS:
+            return flag
+        if flag in (self.FIND_JADE_NONE, 'none'):
+            return old
+        if old == self.FIND_JADE_BOTH or flag == self.FIND_JADE_BOTH:
+            return self.FIND_JADE_BOTH
+        if old != flag:
+            return self.FIND_JADE_BOTH
+        return old
+
+    def saved_jade_flag(self, accountInfo) -> str:
+        """被跳过的号, 从配置文件读回本时段确认过的勾协状态"""
+        current = self.current_account(accountInfo)
+        if current is None:
+            return self.FIND_JADE_UNKNOWN
+        if current.jade_complete_time <= self.jade_refresh_point(datetime.now()):
+            return self.FIND_JADE_UNKNOWN
+        return current.jade_status
+
+    @staticmethod
+    def jade_refresh_point(now: datetime) -> datetime:
+        """悬赏封印最近一次刷新时刻(每天 5 点 / 18 点)"""
+        points = [datetime.combine(now.date(), time(h, 0)) for h in ScriptTask.JADE_REFRESH_HOURS]
+        passed = [p for p in points if p <= now]
+        if passed:
+            return max(passed)
+        return datetime.combine(now.date() - timedelta(days=1), time(18, 0))
+
+    @staticmethod
+    def jade_cycle_key(now: datetime) -> str:
+        """一个时间段算一趟: 05:00-18:00 记 AM, 18:00-次日05:00 记 PM"""
+        refresh = ScriptTask.jade_refresh_point(now)
+        return f'{refresh:%Y-%m-%d}-{"AM" if refresh.hour == 5 else "PM"}'
+
+    @staticmethod
+    def account_key(accountInfo) -> str:
+        return f'{accountInfo.account}|{accountInfo.svr}|{accountInfo.character}'
+
+    def push_result(self, found, resumed) -> None:
+        """只推有勾协的号, 一封邮件两段: 本次执行 + 此前已记录
+
+        没有勾协就整封邮件都不发。按游戏刷新时段算一趟: 同一时段重启多次,
+        内容没变就不重发; 中途新查出勾协才补发一份完整清单。
+        格式照搬一键协战「多号任务完成」那封。
+        """
+        conf = self.current_conf().find_jade_config
+        if not conf.push_result_enable:
             return
-        if not found:
-            logger.info("本次没有账号有勾协, 不推送")
-            return
-        logger.hr('FindJade Result', 2)
-        lines = [f"本次执行（{len(found)}个账号）："]
+
+        # 同一个号只列一次, 优先算「本次执行」
+        seen = set()
+        found_items = []
         for accountInfo, flag in found:
-            message = '-'.join([self.format_account(accountInfo), flag])
-            logger.info(message)
-            lines.append(message)
+            key = self.account_key(accountInfo)
+            if flag in self.JADE_HAS and key not in seen:
+                seen.add(key)
+                found_items.append((accountInfo, flag))
+        resumed_items = []
+        for accountInfo, flag in resumed:
+            key = self.account_key(accountInfo)
+            if flag in self.JADE_HAS and key not in seen:
+                seen.add(key)
+                resumed_items.append((accountInfo, flag))
+        # 兜底: 本时段已落盘、却因切号失败等原因没进上面两段的号也算这一趟
+        refresh = self.jade_refresh_point(datetime.now())
+        for accountInfo in self.current_conf().sup_account_list or []:
+            key = self.account_key(accountInfo)
+            if key in seen or accountInfo.jade_complete_time <= refresh:
+                continue
+            if accountInfo.jade_status not in self.JADE_HAS:
+                continue
+            seen.add(key)
+            resumed_items.append((accountInfo, accountInfo.jade_status))
+
+        if not (found_items or resumed_items):
+            logger.info("本时段没有账号有勾协, 不推送")
+            return
+        cycle = self.jade_cycle_key(datetime.now())
+        snapshot = cycle + '|' + ';'.join(
+            f'{self.account_key(accountInfo)}:{flag}'
+            for accountInfo, flag in sorted(
+                found_items + resumed_items, key=lambda item: self.account_key(item[0])
+            )
+        )
+        if conf.jade_push_state == snapshot:
+            logger.info("本时段结果已推送过, 不重复推送")
+            return
+
+        logger.hr('FindJade Result', 2)
+        lines = []
+        if found_items:
+            lines.append(f"本次执行（{len(found_items)}个账号）：")
+            for accountInfo, flag in found_items:
+                message = '-'.join([self.format_account(accountInfo), flag])
+                logger.info(message)
+                lines.append(message)
+        if resumed_items:
+            lines.append(f"此前已记录勾协（{len(resumed_items)}个账号）：")
+            for accountInfo, flag in resumed_items:
+                message = '-'.join([self.format_account(accountInfo), flag])
+                logger.info(message)
+                lines.append(message)
         self.config.notifier.push(
             title='多号任务完成',
             content='{}\n{}'.format(self.config.config_name, '\n'.join(lines)),
         )
+        # 推送成功后才记快照, 发信失败下次还能重推
+        conf.jade_push_state = snapshot
+        self.save_config()
 
 
     def is_need_login(self, item: AccountInfo):

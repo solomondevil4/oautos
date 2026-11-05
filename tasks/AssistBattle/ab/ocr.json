@@ -1,0 +1,47 @@
+[
+  {
+    "itemName": "normal_assist_count",
+    "roiFront": "875,160,66,34",
+    "roiBack": "875,160,66,34",
+    "mode": "DigitCounter",
+    "method": "Default",
+    "keyword": "",
+    "description": "普通副本协战次数"
+  },
+  {
+    "itemName": "realmraid_assit_count",
+    "roiFront": "1078,203,49,37",
+    "roiBack": "1078,203,49,37",
+    "mode": "DigitCounter",
+    "method": "Default",
+    "keyword": "",
+    "description": "结界突破协战次数"
+  },
+  {
+    "itemName": "consignment_tickts",
+    "roiFront": "954,12,77,32",
+    "roiBack": "954,12,77,32",
+    "mode": "Digit",
+    "method": "Default",
+    "keyword": "",
+    "description": "寄售券数量"
+  },
+  {
+    "itemName": "friend_list",
+    "roiFront": "140,150,360,450",
+    "roiBack": "140,150,360,450",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "好友界面左侧列表(分组标题+好友名)"
+  },
+  {
+    "itemName": "friend_chat_name",
+    "roiFront": "600,100,180,35",
+    "roiBack": "600,100,180,35",
+    "mode": "Single",
+    "method": "Default",
+    "keyword": "",
+    "description": "好友界面右侧聊天区顶部对象名(点人后二次确认)"
+  }
+]

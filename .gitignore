@@ -287,3 +287,5 @@ compact_log.txt
 /tasks/Chess/strategy/custom_lineups.tmp
 # Locks for local lineup editor writes
 /tasks/Chess/strategy/*.lock
+# 本地多开配置（每台机器不同，仅本机使用；上面已忽略的是单数 config/，别混）
+configs/

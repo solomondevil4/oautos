@@ -1,0 +1,14 @@
+[
+  {
+    "itemName": "friend_group_switch",
+    "roiFront": "465,168,12,12",
+    "roiBack": "465,168,12,12",
+    "description": "好友分组标题行三角(切回同区好友)"
+  },
+  {
+    "itemName": "cross_group_switch",
+    "roiFront": "464,584,12,16",
+    "roiBack": "464,584,12,16",
+    "description": "跨区好友分组标题行三角(展开跨区好友)"
+  }
+]

@@ -400,7 +400,7 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
         if not cleaned:
             return None
         # 式神碎片即挑战
-        if '式神' in cleaned:
+        if '神' in cleaned:
             return WQType.CHALLENGE
         for wq_type in WQType:
             if wq_type.value in cleaned or cleaned in wq_type.value:
