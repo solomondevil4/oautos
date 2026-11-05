@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict
 
-from pydantic import Field, BaseModel, model_validator, model_serializer, ValidationError
+from pydantic import Field, BaseModel, ConfigDict, model_validator, model_serializer, ValidationError
 
 from deploy.logger import logger
 from tasks.Component.SwitchAccount.switch_account_config import AccountInfo
@@ -54,7 +54,12 @@ class InviteInfo(BaseModel):
         return self.name != "" and self.name is not None
 
 
-class FindJadeConfig(ConfigBase, extra='allow'):
+class FindJadeConfig(ConfigBase):
+    # GUI / Web 回写的都是字符串，不开赋值校验的话 Time 字段会原样存成 str，
+    # 而 Time 的序列化器要求 time 对象（v.strftime），一保存整个配置就崩。
+    # 开了之后 pydantic 会用 time_validator 自动把 "05:05:00" 转成 time。
+    model_config = ConfigDict(extra='allow', validate_assignment=True)
+
     # 被邀请人数
     invite_info_count: int = Field(default=1, ge=1, description='invite_info_count_help')
     # 小号数
