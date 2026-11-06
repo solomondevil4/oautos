@@ -236,11 +236,14 @@ class HyakkiyakouAssets:
 	# 百鬼夜行门票数量
 	O_HELP_TICKET = RuleOcr(roi=(935,590,60,34), area=(935,590,60,34), mode="Digit", method="Default", keyword="", name="help_ticket")
 	# 帮砸好友弹窗的好友列表
-	O_HELP_LIST = RuleOcr(roi=(370,215,570,345), area=(370,215,570,345), mode="Full", method="Default", keyword="", name="help_list")
+	# 1280x720 实测：5 行卡片、行高 84px、首行文字中心 y=231、末行 y=565。
+	# 下沿必须到 612，原来 (370,215,570,345) 只到 y=560，第 5 行整行读不到。
+	O_HELP_LIST = RuleOcr(roi=(370,200,570,412), area=(370,200,570,412), mode="Full", method="Default", keyword="", name="help_list")
 
 
 	# Swipe Rule Assets
-	# 帮砸好友列表向上滑动(贝塞尔)，看后面的好友
-	S_HELP_LIST_SCROLL = RuleSwipe(roi_front=(600,520,80,30), roi_back=(600,240,80,30), mode="default", name="help_list_scroll")
+	# 帮砸好友列表向上滑动(贝塞尔)，看后面的好友。手指位移 130px≈2 行：可视区只有 5 行，
+	# 滑太多会整屏换掉、中间行从未被识别。时长由 help_friend.py 自己传（慢滑压惯性）。
+	S_HELP_LIST_SCROLL = RuleSwipe(roi_front=(600,485,80,30), roi_back=(600,355,80,30), mode="default", name="help_list_scroll")
 	# 帮砸好友列表向下滑动(贝塞尔)，回到列表顶部
 	S_HELP_LIST_SCROLL_BACK = RuleSwipe(roi_front=(600,240,80,30), roi_back=(600,520,80,30), mode="default", name="help_list_scroll_back")

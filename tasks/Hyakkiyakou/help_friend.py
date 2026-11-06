@@ -15,6 +15,13 @@
 #   主界面 → 点「邀请好友」 → 切「好友」/「跨区」页签 → 按名单点好友
 #   → 弹窗关闭 = 邀请成功 → 点「进」开局砸完 → 回主界面继续下一个
 # 好友当天已被别人邀请满 3 次时，点它弹窗不会关闭，记日志并跳过该好友。
+#
+# 列表布局与滑动（16416 实测，1280x720）：
+#   弹窗列表 y 196~616 共 5 行、每行 2 个好友、行高 84px、首行文字中心 y=231。
+#   一次只滑 2 行（手指 130px / 600ms），保证相邻两帧有 3 行重叠，不会跳过任何一行。
+#   旧配置 280px + 默认时长 250ms 一次能滚 5~6 行 —— 整屏被换掉，中间的好友
+#   从未出现在任何一帧里，这就是「名单上有人却识别不到」的根因。
+import random
 import re
 import time
 
@@ -36,8 +43,34 @@ class HelpFriendTask:
     HELP_PICK_WAIT = 3.0
     # 点好友后两帧之间的间隔
     HELP_PICK_INTERVAL = 0.3
-    # 两次滑动之间的最短间隔（秒）
-    HELP_SWIPE_INTERVAL = 0.5
+
+    # ---- 列表滑动的实测参数（16416，1280x720，2026-11-06 逐档量过） --------------
+    # 列表可视区：y 196~616，5 行卡片；每行 2 个好友；行高 84px（首行文字中心 y=231）。
+    HELP_LINE_HEIGHT = 84
+    HELP_LINES_PER_SCROLL = 2
+    # 手指位移 -> 列表实际滚动的放大倍数：慢滑(600ms) 1.30，快滑(250ms) 1.69。
+    # 实测：80px/600ms 滚 104px(1.24 行)；80px/250ms 滚 135px(1.61 行)；
+    # 160px/600ms 滚 203px(2.42 行)；**280px/250ms 直接滚 5~6 行，整屏被换掉**。
+    # 旧配置就是 280px + 默认时长，于是中间 4~5 行的好友从未出现在任何一帧里 → 漏人。
+    HELP_SCROLL_GAIN = 1.30
+    # 往下扫时每次的手指位移：目标滚 2 行 = 168px，除以放大倍数得 129px。
+    # 这只是初值，实际会按 _help_adapt_step 的实测滚幅在线收敛。
+    HELP_STEP_PX = 130
+    HELP_STEP_PX_MIN = 60
+    HELP_STEP_PX_MAX = 220
+    # 实测滚幅超过这个行数就认为「一次滑太远，再大就会整屏跳过」，步长收一档
+    HELP_STEP_SAFE_LINES = 2.5
+    # 实测滚幅不到这个行数就认为「滑得太慢，白费时间」，步长放一档
+    HELP_STEP_SLOW_LINES = 1.0
+    # 滑动时长必须自己指定：base_task.swipe() 用默认 (0.1,0.2)，adb 再 ×2.5 只有
+    # 0.25~0.5 秒，惯性大、滑得远。拉长到 0.6 秒后放大倍数从 1.69 降到 1.30。
+    HELP_SWIPE_DURATION = (0.55, 0.65)
+    # 滑完必须等惯性滚完再截图，否则 OCR 读到的是滚动中途帧（名字会抖、会漏）
+    HELP_SWIPE_SETTLE = 0.5
+    # 相邻两帧名字数为 0 重叠时，只有两边都识别到这么多名字才判定「真的滑过头」，
+    # 否则可能只是 OCR 抖动，误判会白滑一次
+    HELP_OVERLAP_GUARD = 3
+
     # 连续多少次滑动后列表内容不变，就判定已到底 / 已回顶
     # 不能要求「完全一致」：OCR 会把「最近受邀」读成「最近爱邀」、「弦月孤舟」读成「弦月孤盘」，
     # 还会凭空多出 60% / 50 / 60）这类数字，实测 19 帧里 18 次相邻比较全都不相等。
@@ -47,10 +80,13 @@ class HelpFriendTask:
     HELP_NAME_OVERLAP = 0.75
     # 两帧名字集合相差不超过这么多条（一边多、一边少各算一条）也算「没动」
     HELP_NAME_ALLOW_DIFF = 2
-    # 回顶最多真滑几次（弹窗列表最多几屏，纯防死循环）
-    HELP_TO_TOP_MAX = 8
-    # 往下扫最多真滑几次，纯防死循环，正常靠「内容不变」提前退出
-    HELP_SCROLL_MAX = 60
+    # 回顶最多真滑几次。回顶用大位移 280px（一次 5~6 行），200 个好友约 100 行 ≈ 20 次
+    HELP_TO_TOP_MAX = 30
+    # 往下扫最多真滑几次。每次 2 行，同区/跨区各 200 人（100 行）≈ 50 次，
+    # 留 3 倍余量给「滑过头反滑重扫」和 OCR 抖动
+    HELP_SCROLL_MAX = 160
+    # 单份名单最多 200 人（用户 11-06 定的上限），超出截断并告警
+    HELP_MAX_NAMES = 200
     # 列表 OCR 里这些不是好友名，不参与名单匹配
     HELP_IGNORE_TOKENS = ('好友', '寮友', '跨区', '搜索', '请输入好友昵称或备注搜索', '请输人好发昵称或备注搜索')
     # 纯数字 / 百分号 / 括号 / 度这类是「最近受邀」旁边的人数标记，不是名字
@@ -142,32 +178,114 @@ class HelpFriendTask:
             return True
         return cls._help_overlap(a, b) >= cls.HELP_NAME_OVERLAP
 
-    def _help_scroll(self, to_bottom: bool) -> bool:
+    def _help_step(self) -> int:
+        """当前生效的手指位移（px）。会被 _help_adapt_step 在线自校准。"""
+        return getattr(self, '_help_step_px', self.HELP_STEP_PX)
+
+    def _help_scroll(self, to_bottom: bool) -> None:
         """滑一次列表。to_bottom=True 往下看更多好友，False 回顶部。
 
-        :return: False 表示这次滑动被间隔计时器挡掉了，列表没有真的动
+        不走 base_task.swipe()：往下滑的位移要能自适应调整，必须自己算坐标。
+        回顶不需要连续覆盖，固定用 S_HELP_LIST_SCROLL_BACK 的大位移（一次 5~6 行）。
         """
-        rule = self.S_HELP_LIST_SCROLL if to_bottom else self.S_HELP_LIST_SCROLL_BACK
-        moved = self.swipe(rule, interval=self.HELP_SWIPE_INTERVAL)
+        if not to_bottom:
+            rule = self.S_HELP_LIST_SCROLL_BACK
+            x1, y1, x2, y2 = rule.coord()
+            self.device.swipe(
+                p1=(x1, y1),
+                p2=(x2, y2),
+                duration=self.HELP_SWIPE_DURATION,
+                control_name=rule.name,
+            )
+        else:
+            # 起止点带随机抖动，避免每次都从同一像素开始（长时间同轨迹容易被判定为脚本）
+            x = random.randint(600, 680)
+            y1 = random.randint(485, 515)
+            y2 = y1 - self._help_step()
+            self.device.swipe(
+                p1=(x, y1),
+                p2=(x, y2),
+                duration=self.HELP_SWIPE_DURATION,
+                control_name=self.S_HELP_LIST_SCROLL.name,
+            )
         # 框架把同名动作累加成「重复点击」，同一个素材滑满 10 次就抛
         # GameTooManyClickError（module/device/device.py 的 click_record_check）。
         # 长列表本来就要滑几十次，所以每次滑完立刻清记录；
         # 死循环风险由 HELP_TO_TOP_MAX / HELP_SCROLL_MAX 自己兜底。
         self.device.click_record_clear()
-        return bool(moved)
+        # 等惯性滚完再截图，否则读到的是滚动中途帧
+        time.sleep(self.HELP_SWIPE_SETTLE)
+
+    @staticmethod
+    def _help_measure_shift(prev_items: list, cur_items: list) -> float:
+        """用同名好友的 y 位移量出这一帧列表实际滚了多少像素；量不出来返回 -1。
+
+        取中位数而不是平均值：OCR 的 box 高度有抖动，个别条目会脱群。
+        """
+        pa = {t: y for t, _, y in prev_items}
+        cb = {t: y for t, _, y in cur_items}
+        common = set(pa) & set(cb)
+        if not common:
+            return -1.0
+        deltas = sorted(pa[t] - cb[t] for t in common)
+        return float(deltas[len(deltas) // 2])
+
+    def _help_adapt_step(self, shift: float, label: str) -> None:
+        """按实测滚幅自校准下次的滑动步长。
+
+        minitouch 的滑动时长由距离决定（15px/10ms），改不动，所以不能靠「慢一点」
+        压惯性，只能靠「滑短一点」。滑太远就把步长收一档，滑太少就放一档。
+        """
+        if shift <= 0:
+            return
+        lines = shift / self.HELP_LINE_HEIGHT
+        old = self._help_step()
+        if lines >= self.HELP_STEP_SAFE_LINES:
+            new = max(self.HELP_STEP_PX_MIN, int(old * 0.6))
+            if new != old:
+                self._help_step_px = new
+                logger.warning(
+                    f'帮砸：「{label}」上次实际滚了 {shift:.0f}px（{lines:.1f} 行，'
+                    f'安全线 {self.HELP_STEP_SAFE_LINES} 行），步长 {old} -> {new}px'
+                )
+        elif lines <= self.HELP_STEP_SLOW_LINES:
+            new = min(self.HELP_STEP_PX_MAX, int(old * 1.4))
+            if new != old:
+                self._help_step_px = new
+                logger.info(
+                    f'帮砸：「{label}」上次只滚了 {shift:.0f}px（{lines:.1f} 行），'
+                    f'步长 {old} -> {new}px'
+                )
+
+    def _help_back_step(self) -> None:
+        """反着滑一小步（约 1 行），用于纠正「一次滑过头」。
+
+        只在相邻两帧名字零重叠时调用，属于异常补救，不是常规路径。
+        """
+        px = max(40, int(self._help_step() * 0.6))
+        x = 640
+        y1 = 460
+        y2 = y1 + px
+        logger.info(
+            f'帮砸：反滑一小步 {px}px'
+            f'（约 {px * self.HELP_SCROLL_GAIN / self.HELP_LINE_HEIGHT:.1f} 行）'
+        )
+        self.device.swipe(
+            p1=(x, y1),
+            p2=(x, y2),
+            duration=self.HELP_SWIPE_DURATION,
+            control_name='hya_help_back_step',
+        )
+        self.device.click_record_clear()
+        time.sleep(self.HELP_SWIPE_SETTLE)
 
     def _help_scroll_until_still(self, label: str, to_bottom: bool, limit: int, action: str) -> None:
         """一直滑到列表不再变化为止。limit 是真正滑出去的次数上限，纯防死循环。"""
         prev = self._help_names(self._help_list_ocr())
         still = 0
         done = 0
-        attempts = 0
-        # attempts 多给 4 倍余量：被 interval 挡掉的那次不算滑动，重试即可
-        while done < limit and attempts < limit * 4:
-            attempts += 1
-            if not self._help_scroll(to_bottom):
-                time.sleep(0.15)
-                continue
+        while done < limit:
+            self._help_scroll(to_bottom)
             done += 1
             cur = self._help_names(self._help_list_ocr())
             overlap = self._help_overlap(prev, cur)
@@ -263,9 +381,7 @@ class HelpFriendTask:
         prev = self._help_names(self._help_list_ocr())
         still = 0
         done = 0
-        attempts = 0
-        while done < self.HELP_SCROLL_MAX and attempts < self.HELP_SCROLL_MAX * 4:
-            attempts += 1
+        while done < self.HELP_SCROLL_MAX:
             items = self._help_list_ocr()
             hit = self._help_find(items, pending)
             if hit is not None:
@@ -280,11 +396,40 @@ class HelpFriendTask:
                 still = 0
                 continue
 
-            if not self._help_scroll(to_bottom=True):
-                time.sleep(0.15)
-                continue
+            prev_items = items
+            self._help_scroll(to_bottom=True)
             done += 1
-            cur = self._help_names(self._help_list_ocr())
+            cur_items = self._help_list_ocr()
+            cur = self._help_names(cur_items)
+
+            # 用同名好友的 y 位移量出这一帧实际滚了多远，并据此收敛步长
+            shift = self._help_measure_shift(prev_items, cur_items)
+            if shift > 0:
+                logger.info(
+                    f'帮砸：「{label}」实测滚动 {shift:.0f}px'
+                    f'（{shift / self.HELP_LINE_HEIGHT:.1f} 行，步长 {self._help_step()}px）'
+                )
+                self._help_adapt_step(shift, label)
+
+            # 滑过头兜底：正常一次只滑 2 行，前后必然有 3 行重叠；
+            # 一旦零重叠说明惯性把整屏带走了，中间那几行从没进过任何一帧，
+            # 反滑一步补看。宁可多绕一次，也不能漏好友。
+            if (
+                len(prev) >= self.HELP_OVERLAP_GUARD
+                and len(cur) >= self.HELP_OVERLAP_GUARD
+                and not (prev & cur)
+            ):
+                logger.warning(
+                    f'帮砸：「{label}」第 {done} 次滑动后与上一帧零重叠'
+                    f'（{len(prev)} vs {len(cur)} 个名字），判定滑过头，反滑一步补看'
+                )
+                self._help_back_step()
+                cur = self._help_names(self._help_list_ocr())
+                logger.info(
+                    f'帮砸：「{label}」反滑后可见 {len(cur)} 个名字，'
+                    f'与上一帧重合 {self._help_overlap(prev, cur):.2f}'
+                )
+
             overlap = self._help_overlap(prev, cur)
             logger.info(f'帮砸：「{label}」往下翻第 {done}/{self.HELP_SCROLL_MAX} 次，可见 {len(cur)} 个名字，与上一帧重合 {overlap:.2f}')
             if self._help_same(prev, cur):
@@ -337,17 +482,34 @@ class HelpFriendTask:
         except Exception as e:
             logger.warning(f'帮砸：回庭院失败（{e}），本次不再重试')
 
+    @classmethod
+    def _help_trim_names(cls, names: list, label: str) -> list:
+        """单份名单最多 HELP_MAX_NAMES 人，超出截断并告警（不静默丢弃）。"""
+        if len(names) <= cls.HELP_MAX_NAMES:
+            return names
+        dropped = names[cls.HELP_MAX_NAMES:]
+        logger.warning(
+            f'帮砸：{label}名单填了 {len(names)} 人，超过上限 {cls.HELP_MAX_NAMES}，'
+            f'只处理前 {cls.HELP_MAX_NAMES} 人；被忽略的 {len(dropped)} 人：{dropped}'
+        )
+        return names[:cls.HELP_MAX_NAMES]
+
     def help_friend_run(self) -> None:
         """帮好友砸百鬼夜行，入口。"""
         conf = self._config.hyakkiyakou_config
-        friend_names = conf.hya_help_friend_names_v
-        remote_names = conf.hya_help_remote_names_v
+        friend_names = self._help_trim_names(conf.hya_help_friend_names_v, '同区')
+        remote_names = self._help_trim_names(conf.hya_help_remote_names_v, '跨区')
         max_round = max(1, int(conf.hya_help_max_round))
 
         logger.hr('帮好友砸百鬼夜行', 1)
         logger.info(f'帮砸：同区名单 {len(friend_names)} 人 {friend_names}')
         logger.info(f'帮砸：跨区名单 {len(remote_names)} 人 {remote_names}')
         logger.info(f'帮砸：最多 {max_round} 局，每个好友最多邀请 {self.HELP_PER_FRIEND} 次')
+        logger.info(
+            f'帮砸：列表按每行 2 人、行高 {self.HELP_LINE_HEIGHT}px 滑动，'
+            f'每次滑 {self.HELP_STEP_PX}px（约 {self.HELP_LINES_PER_SCROLL} 行），'
+            f'单页签上限 {self.HELP_SCROLL_MAX} 次'
+        )
 
         if not friend_names and not remote_names:
             logger.warning('帮砸：同区和跨区名单都是空的，不做任何操作直接结束')

@@ -10,11 +10,11 @@
   },
   {
     "itemName": "help_list",
-    "roiFront": "370,215,570,345",
-    "roiBack": "370,215,570,345",
+    "roiFront": "370,200,570,412",
+    "roiBack": "370,200,570,412",
     "mode": "Full",
     "method": "Default",
     "keyword": "",
-    "description": "帮砸好友弹窗的好友列表"
+    "description": "帮砸好友弹窗的好友列表(1280x720 实测：5 行卡片, 行高 84px, 首行文字中心 y=231, 末行 y=565; 下沿必须到 612, 原来只到 560 会把第 5 行整行漏掉)"
   }
 ]

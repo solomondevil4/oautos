@@ -60,12 +60,14 @@ class HyakkiyakouConfig(ConfigBase):
     hya_help_friend_names: MultiLine = Field(
         default='',
         title='同区好友名单',
-        description='每行一个好友名，空行自动忽略。在弹窗的「好友」页签里按名字查找。',
+        description='每行一个好友名，空行自动忽略，最多 200 人（超出的会被忽略并记日志）。'
+        '在弹窗的「好友」页签里按名字查找。',
     )
     hya_help_remote_names: MultiLine = Field(
         default='',
         title='跨区好友名单',
-        description='每行一个好友名，空行自动忽略。在弹窗的「跨区」页签里按名字查找。',
+        description='每行一个好友名，空行自动忽略，最多 200 人（超出的会被忽略并记日志）。'
+        '在弹窗的「跨区」页签里按名字查找。',
     )
     hya_help_max_round: int = Field(
         default=100,
