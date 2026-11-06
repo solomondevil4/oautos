@@ -17,10 +17,25 @@
 # 好友当天已被别人邀请满 3 次时，点它弹窗不会关闭，记日志并跳过该好友。
 #
 # 列表布局与滑动（16416 实测，1280x720）：
-#   弹窗列表 y 196~616 共 5 行、每行 2 个好友、行高 84px、首行文字中心 y=231。
-#   一次只滑 2 行（手指 130px / 600ms），保证相邻两帧有 3 行重叠，不会跳过任何一行。
+#   弹窗顶部 y136~165 是「好友/寮友/跨区」页签，y196~248 是搜索输入框，
+#   好友列表卡片区 y262~590（每行 2 个好友、行高 84px、行文字中心
+#   305 / 389 / 475 / 558），再往下 y637 起是「邀请好友/同行记录」底部按钮。
+#   一次只滑 2 行，保证相邻两帧有 3 行重叠，不会跳过任何一行。
 #   旧配置 280px + 默认时长 250ms 一次能滚 5~6 行 —— 整屏被换掉，中间的好友
 #   从未出现在任何一帧里，这就是「名单上有人却识别不到」的根因。
+#
+# 滑动走廊（2026-11-06 实测补充）：手指起终点一律夹在 y∈[320,585]。
+#   实测起点 y=250 / 265 / 275 都会按中搜索输入框、弹出输入法键盘，弹窗被顶起后
+#   列表 OCR 全乱、还会因为「列表不再变化」被误判成已到底/已回顶而空转。
+#   y=290 起才稳定不触发；上界取 320 留 45px 余量。下界 585 躲开 y637 起的底部按钮。
+#
+# 滑动步长的标定依据（2026-11-06 真机日志复盘）：
+#   OAS 走 minitouch，不是 adb 的 `input swipe`。同一个手指位移，minitouch 滑得更快、
+#   惯性更大：130px 在 adb 下滚 143px，在 OAS 里实滚 211px（放大 1.62 倍）。
+#   所以步长初值必须按 1.62 反算，不能沿用 adb 量出来的 1.30。
+#   另外「滑过头」不能靠「名字零重叠」判断：列表 OCR 会把一行名字拆成 2~3 个碎片，
+#   正常滚 2.5 行时集合交集常常掉到 0.2~0.5，实测因此被误判成滑过头、反滑、
+#   再前进，位置在两屏之间来回晃。判据改用 _help_measure_shift 量出来的实际位移。
 import random
 import re
 import time
@@ -45,37 +60,62 @@ class HelpFriendTask:
     HELP_PICK_INTERVAL = 0.3
 
     # ---- 列表滑动的实测参数（16416，1280x720，2026-11-06 逐档量过） --------------
-    # 列表可视区：y 196~616，5 行卡片；每行 2 个好友；行高 84px（首行文字中心 y=231）。
+    # 列表卡片区 y 262~590；每行 2 个好友；行高 84px（行文字中心 305/389/475/558）。
     HELP_LINE_HEIGHT = 84
     HELP_LINES_PER_SCROLL = 2
-    # 手指位移 -> 列表实际滚动的放大倍数：慢滑(600ms) 1.30，快滑(250ms) 1.69。
-    # 实测：80px/600ms 滚 104px(1.24 行)；80px/250ms 滚 135px(1.61 行)；
-    # 160px/600ms 滚 203px(2.42 行)；**280px/250ms 直接滚 5~6 行，整屏被换掉**。
-    # 旧配置就是 280px + 默认时长，于是中间 4~5 行的好友从未出现在任何一帧里 → 漏人。
-    HELP_SCROLL_GAIN = 1.30
-    # 往下扫时每次的手指位移：目标滚 2 行 = 168px，除以放大倍数得 129px。
-    # 这只是初值，实际会按 _help_adapt_step 的实测滚幅在线收敛。
-    HELP_STEP_PX = 130
-    HELP_STEP_PX_MIN = 60
-    HELP_STEP_PX_MAX = 220
-    # 实测滚幅超过这个行数就认为「一次滑太远，再大就会整屏跳过」，步长收一档
-    HELP_STEP_SAFE_LINES = 2.5
-    # 实测滚幅不到这个行数就认为「滑得太慢，白费时间」，步长放一档
+    # 手指起终点必须落在这个纵向走廊内。上面是搜索输入框（y196~248），下面是
+    # 底部按钮（y637 起）。实测起点 275 仍会点开搜索框、弹出键盘，290 起安全，
+    # 上界取 320 留 45px 余量。
+    HELP_SWIPE_TOP = 320
+    HELP_SWIPE_BOTTOM = 585
+    HELP_SWIPE_X = (600, 680)
+    # 回顶一次的手指位移（手指下移）：260px ≈ 一次滚 4~5 行，200 人约 20 次到顶
+    HELP_TO_TOP_PX = 260
+    # 手指位移 -> 列表实际滚动的放大倍数（只用于日志换算和反滑距离估算，
+    # 步长不靠它算）。真机日志实测：手指 130px 滚 211px，放大 1.62。
+    HELP_SCROLL_GAIN = 1.62
+    # 往下扫时每次的手指位移。真机实测收敛区间是 65~84px，中位约 73px
+    # （滚幅 159~183px = 1.9~2.2 行），所以初值直接取 75，不必每次从 104 掉下来。
+    # 列表是「吸附式」滚动，同一段位移的实测滚幅在 131~234px 之间跳，属于 OCR
+    # 测量噪声，不是真的滑多滑少 —— 所以下面用死区卡住，不在噪声里反复调。
+    HELP_STEP_PX = 75
+    HELP_STEP_PX_MIN = 55
+    HELP_STEP_PX_MAX = 200
+    # 死区：实测滚幅落在 [SLOW, SAFE] 行之间就不动步长。
+    # 这个列表是「吸附式」滚动，一次滑动只停整行位置（1 行 84px / 2 行 168px / 3 行 252px），
+    # 所以滚幅不是步长的连续函数。真机日志按步长分组统计：
+    #   步长 66px -> 1.5~2.1 行（10 次）；步长 68px -> 1.6~2.6 行；步长 75px -> 1.7~2.7 行。
+    # **同一步长自身的波动（约 1.0 行）和不同步长之间的差异一样大**，
+    # 于是「按实测值反算步长」永远收敛不了：一整轮 13 次调整
+    # （75->56->75->56->75->62->83->66->89->63->85->68->55->73）全是噪声驱动，
+    # 每次调完照样越界，一次都没真正修好过。所以死区必须宽到覆盖吸附量化 + OCR 抖动。
+    # 上限定 3.0：可视 5 行滚 3 行仍重叠 2 行，且离漏行门槛 HELP_SKIP_LINES(3.5) 还有 0.5 行余量。
+    # 下限定 1.0：滚不到 1 行说明真卡住了（不是噪声），才值得放大步长。
     HELP_STEP_SLOW_LINES = 1.0
-    # 滑动时长必须自己指定：base_task.swipe() 用默认 (0.1,0.2)，adb 再 ×2.5 只有
-    # 0.25~0.5 秒，惯性大、滑得远。拉长到 0.6 秒后放大倍数从 1.69 降到 1.30。
+    HELP_STEP_SAFE_LINES = 3.0
+    # 一次真的滚过这么多行，才会有一整行「落在两帧之间」被漏掉，才值得反滑补看。
+    # 可视 5 行，滚 3.5 行仍能覆盖 1.5 行，不会漏；超过就有漏的风险。
+    HELP_SKIP_LINES = 3.5
+    # 每个页签最多反滑几次。反滑是补救手段，不是常规路径：万一反滑后下一帧又
+    # 被判滑过头（OCR 全读到碎片、前后帧真的一条都不重），会反滑→前进→反滑地
+    # 原地打转。到上限就放弃补救、只记日志继续往前，宁可漏一个也不卡死。
+    HELP_BACK_MAX = 3
+    # 滑动时长必须自己指定：base_task.swipe() 用默认 (0.1,0.2)，控制不住快慢。
     HELP_SWIPE_DURATION = (0.55, 0.65)
     # 滑完必须等惯性滚完再截图，否则 OCR 读到的是滚动中途帧（名字会抖、会漏）
-    HELP_SWIPE_SETTLE = 0.5
-    # 相邻两帧名字数为 0 重叠时，只有两边都识别到这么多名字才判定「真的滑过头」，
-    # 否则可能只是 OCR 抖动，误判会白滑一次
+    HELP_SWIPE_SETTLE = 0.6
+    # 相邻两帧名字数为 0 重叠时，只有两边都识别到这么多名字才走「量不到位移」的降级判据
     HELP_OVERLAP_GUARD = 3
 
     # 连续多少次滑动后列表内容不变，就判定已到底 / 已回顶
     # 不能要求「完全一致」：OCR 会把「最近受邀」读成「最近爱邀」、「弦月孤舟」读成「弦月孤盘」，
     # 还会凭空多出 60% / 50 / 60）这类数字，实测 19 帧里 18 次相邻比较全都不相等。
-    # 所以改成「名字集合重合度」判稳，见 _help_same()
-    HELP_SCROLL_STILL = 2
+    # 所以改成「名字集合重合度」判稳，见 _help_same()。
+    # 取 3 而不是 2：真机日志 22:34:15 那次「可见 8 个名字、与上一帧重合 1.00」之后，
+    # 紧接的一次却实测滚了 222px —— 说明那次滑动根本没生效（被系统吞了），
+    # 列表没动却被算进「不变」。连续两次吞掉就会误判到底、漏掉后面的好友。
+    # 多要一次确认的代价只是真到底时多滑一次（约 2 秒），比漏人划算。
+    HELP_SCROLL_STILL = 3
     # 两帧名字集合重合度达到这个比例就算「列表没动」
     HELP_NAME_OVERLAP = 0.75
     # 两帧名字集合相差不超过这么多条（一边多、一边少各算一条）也算「没动」
@@ -126,7 +166,7 @@ class HelpFriendTask:
             logger.warning(f'帮砸：好友列表 OCR 异常 {e}')
             return items
         for res in results:
-            text = (res.ocr_text or '').strip()
+            text = self._help_norm((res.ocr_text or '').strip())
             if not text or self._help_is_noise(text):
                 continue
             box = res.box
@@ -134,6 +174,17 @@ class HelpFriendTask:
             cy = oy + int((box[0][1] + box[2][1]) / 2)
             items.append((text, cx, cy))
         return items
+
+    @staticmethod
+    def _help_norm(text: str) -> str:
+        """去掉 OCR 常见的首尾标点，让「南风知」和「南风知:」「南风知：」算同一个名字。
+
+        列表里每个名字后面都跟着等级/状态，OCR 经常把「:」「;」「、」粘在名字末尾，
+        不归一化的话同一行在两帧之间会变成两个不同名字，重合度被打到 0.2 左右，
+        判稳和滑过头判据都会跟着失真。
+        """
+        punct = r'[\s:;,，。、!！?？|｜；：「」『』·～~]'
+        return re.sub(rf'^{punct}+|{punct}+$', '', text)
 
     @classmethod
     def _help_is_noise(cls, text: str) -> bool:
@@ -182,32 +233,43 @@ class HelpFriendTask:
         """当前生效的手指位移（px）。会被 _help_adapt_step 在线自校准。"""
         return getattr(self, '_help_step_px', self.HELP_STEP_PX)
 
+    def _help_swipe(self, delta_px: int, control_name: str) -> None:
+        """沿垂直方向滑一次，起终点强制夹在安全走廊 HELP_SWIPE_TOP~BOTTOM 内。
+
+        :param delta_px: <0 手指上移（列表往下翻）；>0 手指下移（回顶 / 反滑）
+        :param control_name: 传给框架的动作名，用于重复动作限流
+
+        为什么必须夹：弹窗顶部 y196~248 是搜索输入框，手指按上去就会获得焦点、
+        弹出输入法键盘，弹窗被顶起后列表 OCR 全乱，还会因为「列表不再变化」被
+        误判成已到底而空转。实测起点 250 / 265 / 275 全部触发，290 起才安全。
+        y637 以下是「邀请好友 / 同行记录」底部按钮，也不能经过。
+        """
+        x = random.randint(*self.HELP_SWIPE_X)
+        span = self.HELP_SWIPE_BOTTOM - self.HELP_SWIPE_TOP
+        dist = max(30, min(span, abs(int(delta_px))))
+        if delta_px < 0:
+            y1 = random.randint(self.HELP_SWIPE_TOP + dist, self.HELP_SWIPE_BOTTOM)
+            y2 = y1 - dist
+        else:
+            y1 = random.randint(self.HELP_SWIPE_TOP, self.HELP_SWIPE_BOTTOM - dist)
+            y2 = y1 + dist
+        self.device.swipe(
+            p1=(x, y1),
+            p2=(x, y2),
+            duration=self.HELP_SWIPE_DURATION,
+            control_name=control_name,
+        )
+
     def _help_scroll(self, to_bottom: bool) -> None:
         """滑一次列表。to_bottom=True 往下看更多好友，False 回顶部。
 
-        不走 base_task.swipe()：往下滑的位移要能自适应调整，必须自己算坐标。
-        回顶不需要连续覆盖，固定用 S_HELP_LIST_SCROLL_BACK 的大位移（一次 5~6 行）。
+        不走 base_task.swipe() / RuleSwipe.coord()：位移要能自适应调整，
+        而且起终点必须夹在安全走廊里（见 _help_swipe 的说明）。
         """
-        if not to_bottom:
-            rule = self.S_HELP_LIST_SCROLL_BACK
-            x1, y1, x2, y2 = rule.coord()
-            self.device.swipe(
-                p1=(x1, y1),
-                p2=(x2, y2),
-                duration=self.HELP_SWIPE_DURATION,
-                control_name=rule.name,
-            )
+        if to_bottom:
+            self._help_swipe(-self._help_step(), self.S_HELP_LIST_SCROLL.name)
         else:
-            # 起止点带随机抖动，避免每次都从同一像素开始（长时间同轨迹容易被判定为脚本）
-            x = random.randint(600, 680)
-            y1 = random.randint(485, 515)
-            y2 = y1 - self._help_step()
-            self.device.swipe(
-                p1=(x, y1),
-                p2=(x, y2),
-                duration=self.HELP_SWIPE_DURATION,
-                control_name=self.S_HELP_LIST_SCROLL.name,
-            )
+            self._help_swipe(self.HELP_TO_TOP_PX, self.S_HELP_LIST_SCROLL_BACK.name)
         # 框架把同名动作累加成「重复点击」，同一个素材滑满 10 次就抛
         # GameTooManyClickError（module/device/device.py 的 click_record_check）。
         # 长列表本来就要滑几十次，所以每次滑完立刻清记录；
@@ -225,57 +287,80 @@ class HelpFriendTask:
         pa = {t: y for t, _, y in prev_items}
         cb = {t: y for t, _, y in cur_items}
         common = set(pa) & set(cb)
-        if not common:
+        # 只有 1 个同名时不能采信：OCR 偶尔把同一个名字在两帧里错读成不同文本，
+        # 剩下那唯一一个的 box 又可能脱群（贴在卡片边上），量出来的位移会差好几行。
+        # 实测中拿单个锚点量出过 341px 这种明显离谱的值，会把步长带偏。
+        if len(common) < 2:
             return -1.0
         deltas = sorted(pa[t] - cb[t] for t in common)
         return float(deltas[len(deltas) // 2])
 
     def _help_adapt_step(self, shift: float, label: str) -> None:
-        """按实测滚幅自校准下次的滑动步长。
+        """按实测滚幅反算下次的滑动步长（等比缩放，只在越界时才动）。
 
         minitouch 的滑动时长由距离决定（15px/10ms），改不动，所以不能靠「慢一点」
-        压惯性，只能靠「滑短一点」。滑太远就把步长收一档，滑太少就放一档。
+        压惯性，只能靠「滑短一点」。既然已经量出「多少手指位移 = 多少实际滚动」，
+        就直接按目标滚幅等比缩放，比按档收敛又快又不震荡。
+
+        但缩放必须带死区：这个列表是吸附式滚动，一次只停整行位置，滚幅不是步长的
+        连续函数 —— 同一步长 66px 实测 1.5~2.1 行、75px 实测 1.7~2.7 行，自身波动
+        就有 1.0 行，与不同步长之间的差异一样大。死区窄了就会在噪声里反复调
+        （真机日志一整轮调了 13 次：75->56->75->56->75->62->83->66->89->63->85->68->55->73，
+        每次调完照样越界）。所以死区放到 1.0~3.0 行，只兜真正的异常。
+
+        历史教训：更早的两档法（超安全线砍到 0.6 倍、不足下限放 1.4 倍）会卡死 ——
+        130px 实测 2.5 行恰好压在安全线上，被一刀砍到 78px 滚 1.5 行，
+        而 1.5 行又不在任何一档的触发条件里，从此再也收敛不回来。
         """
         if shift <= 0:
             return
         lines = shift / self.HELP_LINE_HEIGHT
         old = self._help_step()
-        if lines >= self.HELP_STEP_SAFE_LINES:
-            new = max(self.HELP_STEP_PX_MIN, int(old * 0.6))
-            if new != old:
-                self._help_step_px = new
-                logger.warning(
-                    f'帮砸：「{label}」上次实际滚了 {shift:.0f}px（{lines:.1f} 行，'
-                    f'安全线 {self.HELP_STEP_SAFE_LINES} 行），步长 {old} -> {new}px'
-                )
-        elif lines <= self.HELP_STEP_SLOW_LINES:
-            new = min(self.HELP_STEP_PX_MAX, int(old * 1.4))
-            if new != old:
-                self._help_step_px = new
-                logger.info(
-                    f'帮砸：「{label}」上次只滚了 {shift:.0f}px（{lines:.1f} 行），'
-                    f'步长 {old} -> {new}px'
-                )
+        # 死区：吸附量化（1/2/3 行）+ OCR 的 y 抖动（约 0.5 行）都落在这里面，
+        # 当成「正常」不动步长。日志实测一轮 39 次测量全部落在 1.2~2.8 行，
+        # 也就是这条 if 会把 13 次无效调整全部挡掉。
+        if self.HELP_STEP_SLOW_LINES <= lines <= self.HELP_STEP_SAFE_LINES:
+            return
+        target = self.HELP_LINES_PER_SCROLL * self.HELP_LINE_HEIGHT
+        new = int(old * target / shift)
+        # 单次限幅 ±35%：OCR 的 y 位移偶尔只匹配到脱群的一条，量出来的 shift 会偏，
+        # 不给限幅会被这种异常值把步长带飞。
+        new = max(int(old * 0.65), min(int(old * 1.35), new))
+        new = max(self.HELP_STEP_PX_MIN, min(self.HELP_STEP_PX_MAX, new))
+        if abs(new - old) < 8:
+            return
+        self._help_step_px = new
+        level = logger.warning if lines > self.HELP_STEP_SAFE_LINES else logger.info
+        level(
+            f'帮砸：「{label}」步长 {old} -> {new}px'
+            f'（实测 {lines:.1f} 行，超出死区 {self.HELP_STEP_SLOW_LINES}~{self.HELP_STEP_SAFE_LINES} 行）'
+        )
 
-    def _help_back_step(self) -> None:
-        """反着滑一小步（约 1 行），用于纠正「一次滑过头」。
+    @classmethod
+    def _help_skip_back(cls, lines: float) -> float:
+        """这次实际滚了 lines 行，判断要不要反滑补看；返回需要反滑的行数，0 = 不用。
 
-        只在相邻两帧名字零重叠时调用，属于异常补救，不是常规路径。
+        门槛是 HELP_SKIP_LINES（3.5 行）：可视 5 行，滚 3.5 行时相邻两帧仍重叠
+        1.5 行，不会有整行落在两帧之间。超过才可能漏，才值得反滑。
+        实测 2.5 行是正常滑动（目标 2 行 + 惯性余量），绝不能触发反滑，
+        否则列表在两屏之间来回晃，反而更容易漏。
         """
-        px = max(40, int(self._help_step() * 0.6))
-        x = 640
-        y1 = 460
-        y2 = y1 + px
-        logger.info(
-            f'帮砸：反滑一小步 {px}px'
-            f'（约 {px * self.HELP_SCROLL_GAIN / self.HELP_LINE_HEIGHT:.1f} 行）'
-        )
-        self.device.swipe(
-            p1=(x, y1),
-            p2=(x, y2),
-            duration=self.HELP_SWIPE_DURATION,
-            control_name='hya_help_back_step',
-        )
+        if lines < 0 or lines <= cls.HELP_SKIP_LINES:
+            return 0.0
+        return max(0.5, lines - cls.HELP_LINES_PER_SCROLL)
+
+    def _help_back_step(self, lines_back: float) -> None:
+        """反着滑回去 lines_back 行，用于纠正「一次滑过头」。
+
+        只在 _help_measure_shift 量出「实际滚了 3.5 行以上」时才调用，
+        属于异常补救，不是常规路径（正常一次只滚 2 行）。
+        """
+        lines_back = max(0.5, min(3.0, lines_back))
+        px = int(lines_back * self.HELP_LINE_HEIGHT / self.HELP_SCROLL_GAIN)
+        # 上界不能用 300：起终点都要留在安全走廊内，否则会滑到搜索框或底部按钮
+        px = max(30, min(self.HELP_SWIPE_BOTTOM - self.HELP_SWIPE_TOP, px))
+        logger.warning(f'帮砸：反滑 {lines_back:.1f} 行补看（手指 {px}px，走廊内）')
+        self._help_swipe(px, 'hya_help_back_step')
         self.device.click_record_clear()
         time.sleep(self.HELP_SWIPE_SETTLE)
 
@@ -381,6 +466,7 @@ class HelpFriendTask:
         prev = self._help_names(self._help_list_ocr())
         still = 0
         done = 0
+        back_done = 0
         while done < self.HELP_SCROLL_MAX:
             items = self._help_list_ocr()
             hit = self._help_find(items, pending)
@@ -402,33 +488,59 @@ class HelpFriendTask:
             cur_items = self._help_list_ocr()
             cur = self._help_names(cur_items)
 
-            # 用同名好友的 y 位移量出这一帧实际滚了多远，并据此收敛步长
+            # 用同名好友的 y 位移量出这一帧实际滚了多远，并据此等比收敛步长
             shift = self._help_measure_shift(prev_items, cur_items)
             if shift > 0:
                 logger.info(
                     f'帮砸：「{label}」实测滚动 {shift:.0f}px'
-                    f'（{shift / self.HELP_LINE_HEIGHT:.1f} 行，步长 {self._help_step()}px）'
+                    f'（{shift / self.HELP_LINE_HEIGHT:.1f} 行，'
+                    f'目标 {self.HELP_LINES_PER_SCROLL} 行，步长 {self._help_step()}px）'
                 )
                 self._help_adapt_step(shift, label)
 
-            # 滑过头兜底：正常一次只滑 2 行，前后必然有 3 行重叠；
-            # 一旦零重叠说明惯性把整屏带走了，中间那几行从没进过任何一帧，
-            # 反滑一步补看。宁可多绕一次，也不能漏好友。
-            if (
-                len(prev) >= self.HELP_OVERLAP_GUARD
-                and len(cur) >= self.HELP_OVERLAP_GUARD
-                and not (prev & cur)
-            ):
+            # 滑过头兜底。判据用「实测位移」而不是「名字零重叠」：
+            # 列表 OCR 会把一行名字拆成 2~3 个碎片，正常滚 2.5 行时集合交集
+            # 实测只掉到 0.2~0.5，甚至到 0，用它判断会天天误报「滑过头」，
+            # 于是反滑、再前进，列表在两屏之间来回晃，白跑还容易漏。
+            lines = shift / self.HELP_LINE_HEIGHT if shift > 0 else -1.0
+            back = self._help_skip_back(lines)
+            if back <= 0 and shift <= 0 \
+                    and len(prev) >= self.HELP_OVERLAP_GUARD \
+                    and len(cur) >= self.HELP_OVERLAP_GUARD and not (prev & cur):
+                # 量不到位移（前后没有同名好友）+ 名字零重叠，才退回用名字猜：
+                # 可能真的整屏被带走了，按 1.5 行反滑补看。
                 logger.warning(
-                    f'帮砸：「{label}」第 {done} 次滑动后与上一帧零重叠'
-                    f'（{len(prev)} vs {len(cur)} 个名字），判定滑过头，反滑一步补看'
+                    f'帮砸：「{label}」第 {done} 次滑动后量不到位移且零重叠'
+                    f'（{len(prev)} vs {len(cur)} 个名字），按滑过头处理'
                 )
-                self._help_back_step()
-                cur = self._help_names(self._help_list_ocr())
-                logger.info(
-                    f'帮砸：「{label}」反滑后可见 {len(cur)} 个名字，'
-                    f'与上一帧重合 {self._help_overlap(prev, cur):.2f}'
-                )
+                back = 1.5
+
+            if back > 0:
+                if back_done >= self.HELP_BACK_MAX:
+                    # 已经补看够次数了：再反滑就是原地打转，放手往前推进
+                    logger.warning(
+                        f'帮砸：「{label}」本次已反滑 {back_done} 次（上限 {self.HELP_BACK_MAX}），'
+                        f'不再补看，继续往前（这一段可能漏掉 {back:.1f} 行）'
+                    )
+                    back = 0.0
+                else:
+                    logger.warning(
+                        f'帮砸：「{label}」实测滚了 {lines:.1f} 行'
+                        f'（>{self.HELP_SKIP_LINES} 行），判定滑过头 {back:.1f} 行，反滑补看'
+                    )
+                    back_done += 1
+                    self._help_back_step(back)
+                    cur_items = self._help_list_ocr()
+                    cur = self._help_names(cur_items)
+                    logger.info(
+                        f'帮砸：「{label}」反滑后可见 {len(cur)} 个名字，'
+                        f'与上一帧重合 {self._help_overlap(prev, cur):.2f}'
+                    )
+                    # 这次滑动被反滑抵消了，位置基本回到原处，不能拿它去判「列表没变」，
+                    # 否则 still 会被这种无效滑动喂满，误判成「已滑到底」提前收工。
+                    prev = cur
+                    still = 0
+                    continue
 
             overlap = self._help_overlap(prev, cur)
             logger.info(f'帮砸：「{label}」往下翻第 {done}/{self.HELP_SCROLL_MAX} 次，可见 {len(cur)} 个名字，与上一帧重合 {overlap:.2f}')
@@ -507,7 +619,8 @@ class HelpFriendTask:
         logger.info(f'帮砸：最多 {max_round} 局，每个好友最多邀请 {self.HELP_PER_FRIEND} 次')
         logger.info(
             f'帮砸：列表按每行 2 人、行高 {self.HELP_LINE_HEIGHT}px 滑动，'
-            f'每次滑 {self.HELP_STEP_PX}px（约 {self.HELP_LINES_PER_SCROLL} 行），'
+            f'逐步长初值 {self.HELP_STEP_PX}px（约 {self.HELP_LINES_PER_SCROLL} 行，'
+            f'实测滚幅落在 {self.HELP_STEP_SLOW_LINES}~{self.HELP_STEP_SAFE_LINES} 行内就不调），'
             f'单页签上限 {self.HELP_SCROLL_MAX} 次'
         )
 
