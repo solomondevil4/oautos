@@ -365,13 +365,18 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        WQEX = type("WQEX", (module.ScriptTask,), {
+        # 多继承 AssistBattleAssets 是为了现世勾协标记素材 I_PRESENT_WORLD_JADE_ASSIST_N,
+        # WantedQuestsAssets 里没有这几张图(两份 assets 属性名无交集, 不会互相覆盖)。
+        WQEX = type("WQEX", (module.ScriptTask, AssistBattleAssets), {
             "need_invite_vip": WantedQuestsEx.need_invite_vip,
+            "get_cooperation_info": WantedQuestsEx.get_cooperation_info,
             "get_invite_vip_name": WantedQuestsEx.get_invite_vip_name,
             "next_run": WantedQuestsEx.next_run,
             "invite_success_callback": WantedQuestsEx.invite_success_callback,
             "get_config": WantedQuestsEx.get_config
         })
+        # 让覆写的 get_cooperation_info 能调到上游原实现(只补标记, 不复制逻辑)
+        WantedQuestsEx.set_wq_base(module.ScriptTask)
         wq = WQEX(**kwargs)
         return wq
 

@@ -1,0 +1,16 @@
+[
+  {
+    "description": "帮砸好友列表向上滑动(贝塞尔)，看后面的好友",
+    "itemName": "help_list_scroll",
+    "roiFront": "600,520,80,30",
+    "roiBack": "600,240,80,30",
+    "mode": "default"
+  },
+  {
+    "description": "帮砸好友列表向下滑动(贝塞尔)，回到列表顶部",
+    "itemName": "help_list_scroll_back",
+    "roiFront": "600,240,80,30",
+    "roiBack": "600,520,80,30",
+    "mode": "default"
+  }
+]

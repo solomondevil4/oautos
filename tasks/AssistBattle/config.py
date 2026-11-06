@@ -168,6 +168,10 @@ class AssistBattleDailyConfig(BaseModel):
         default=Weekday.SUNDAY,
         description='寄售券购买的执行日，选「每天」则每次运行都买',
     )
+    sign_act_enable: bool = Field(
+        default=False,
+        description='限时活动强力式神免费领',
+    )
     # 购买指定联动碎片（复用大富翁-购买指定式神碎片的流程）
     consignment_shikigami_enable: bool = Field(
         default=False,

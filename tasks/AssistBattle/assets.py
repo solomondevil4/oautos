@@ -40,6 +40,21 @@ class AssistBattleAssets:
 	I_FRIEND_CROSS_FOLDED = RuleImage(roi_front=(466,587,11,18), roi_back=(450,570,45,45), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_group_folded.png")
 
 
+	# Image Rule Assets
+	# 前往签到活动 
+	I_MAIN_GOTO_SIGN_ACT = RuleImage(roi_front=(1189,374,32,32), roi_back=(1167,128,83,382), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_main_goto_sign_act.png")
+	# 存在奖励标志 
+	I_REWARD_EXIST = RuleImage(roi_front=(193,441,16,15), roi_back=(185,363,28,312), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_reward_exist.png")
+	# 领取奖励 
+	I_REWARD_BOX = RuleImage(roi_front=(296,450,68,69), roi_back=(260,342,144,257), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_reward_box.png")
+	# 召唤动画结束 
+	I_SUMMON_OVER = RuleImage(roi_front=(1187,635,55,40), roi_back=(1164,613,101,91), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_summon_over.png")
+	# 签到活动界面标志 
+	I_CHECK_SIGN_ACT = RuleImage(roi_front=(929,294,28,29), roi_back=(908,264,75,80), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_check_sign_act.png")
+	# 取消下载动画 
+	I_CANCEL_DOWNLOAD = RuleImage(roi_front=(461,428,58,34), roi_back=(409,400,166,88), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_cancel_download.png")
+
+
 	# Ocr Rule Assets
 	# 普通副本协战次数 
 	O_NORMAL_ASSIST_COUNT = RuleOcr(roi=(875,160,66,34), area=(875,160,66,34), mode="DigitCounter", method="Default", keyword="", name="normal_assist_count")

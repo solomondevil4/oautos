@@ -29,11 +29,27 @@ class InviteInfo(BaseModel):
                                        description='invite_history_4_help')
     invite_history_8: DateTime = Field(default=DateTime.fromisoformat("2023-01-01 00:00:00"),
                                        description='invite_history_8_help')
+    # 现世勾协单独记一份: 游戏里同一个好友每个周期可以各接一次普勾和现勾,
+    # 两者都是勾玉奖励(CooperationType.Jade), 共用 invite_history_2 会让第二次被
+    # 误判成「刚接过」而跳过, 少发一份额度。
+    invite_history_jade_special: DateTime = Field(
+        default=DateTime.fromisoformat("2023-01-01 00:00:00"),
+        description='上次邀请现世勾协的时间（脚本自动维护，请勿手改）',
+    )
 
-    def need_invite(self, ctype: CooperationType):
+    def _history_field(self, ctype: CooperationType, present_world: bool = False) -> str:
+        """返回该协作类型该读写的「上次邀请时间」字段名
+
+        现世勾协(Jade + 现世标记)走独立字段; 其余一律沿用上游的 invite_history_<类型值>。
+        """
+        if present_world and ctype & CooperationType.Jade:
+            return 'invite_history_jade_special'
+        return "invite_history_" + str(ctype)
+
+    def need_invite(self, ctype: CooperationType, present_world: bool = False):
         if not ctype & CooperationSelectMask[self.default_invite_type.value]:
             return False
-        last_time = self.__getattribute__("invite_history_" + str(ctype))
+        last_time = self.__getattribute__(self._history_field(ctype, present_world))
 
         now = datetime.now()
         if now - last_time > timedelta(hours=13):
@@ -44,10 +60,10 @@ class InviteInfo(BaseModel):
             return True
         return False
 
-    def update_invite_history(self, ctype: CooperationType, name=None):
+    def update_invite_history(self, ctype: CooperationType, name=None, present_world: bool = False):
         if name != self.name:
             return
-        self.__setattr__("invite_history_" + str(ctype), datetime.now())
+        self.__setattr__(self._history_field(ctype, present_world), datetime.now())
 
     def is_valid(self):
         return self.name != "" and self.name is not None
@@ -99,18 +115,18 @@ class FindJade(ConfigBase):
     # 小号信息
     sup_account_list: list[FindJadeAccountInfo] = None
 
-    def get_invite_name(self, ctype: CooperationType):
+    def get_invite_name(self, ctype: CooperationType, present_world: bool = False):
         for info in self.invite_info_list:
-            if info.need_invite(ctype):
+            if info.need_invite(ctype, present_world):
                 return info.name
         return ""
 
-    def update_invite_history(self, ctype: CooperationType, name: str):
+    def update_invite_history(self, ctype: CooperationType, name: str, present_world: bool = False):
         # 更新邀请信息
         for info in self.invite_info_list:
             if info.name != name:
                 continue
-            info.update_invite_history(ctype, name)
+            info.update_invite_history(ctype, name, present_world)
 
     def update_account_login_history(self, account: AccountInfo):
         accountInfoList = self.sup_account_list

@@ -27,6 +27,8 @@ test/
 build-fluentui-Desktop_*/
 module/config/argument/setting.json
 module/config/i18n/*.json
+# 自建中文词条词典（优先级高于 assets/i18n/zh-CN.json，纳入版本管理防重装丢失）
+!module/config/i18n/zh-CN.json
 !fluentui/*
 *.exe
 !dev_tools/*

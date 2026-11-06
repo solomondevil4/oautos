@@ -1,0 +1,20 @@
+[
+  {
+    "itemName": "help_ticket",
+    "roiFront": "935,590,60,34",
+    "roiBack": "935,590,60,34",
+    "mode": "Digit",
+    "method": "Default",
+    "keyword": "",
+    "description": "百鬼夜行门票数量"
+  },
+  {
+    "itemName": "help_list",
+    "roiFront": "370,215,570,345",
+    "roiBack": "370,215,570,345",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "帮砸好友弹窗的好友列表"
+  }
+]

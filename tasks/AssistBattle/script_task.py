@@ -12,12 +12,14 @@ from module.exception import (
 from tasks.Component.SwitchAccount.switch_account import SwitchAccount
 from tasks.EvoZone.config import Layer, KirinType
 from tasks.EvoZone.script_task import ScriptTask as EvoZoneScriptTask
+from tasks.GameUi.default_pages import random_click
 from tasks.RealmRaid.script_task import ScriptTask as RealmRaidScriptTask
 from tasks.DailyTrifles.script_task import ScriptTask as DailyTriflesScriptTask
 from tasks.KekkaiUtilize.script_task import ScriptTask as KekkaiUtilizeScriptTask
 from tasks.KekkaiUtilize.page import page_guild_realm
 from tasks.MysteryShop.script_task import ScriptTask as MysteryShopScriptTask
 from tasks.GameUi.page import page_main, page_assist_battle, page_mall, page_friends
+from tasks.AssistBattle.page import page_sign_act
 from tasks.GameUi.assets import GameUiAssets
 from tasks.WantedQuests.assets import WantedQuestsAssets
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationType
@@ -203,12 +205,15 @@ class ScriptTask(
         if failed:
             push_content.append(f"切换失败（{len(failed)}个账号）：")
             for account in failed:
-                message = self.format_account_name({
-                    'account': account.account,
-                    'character': account.character,
-                    'svr': account.svr,
-                    'apple_or_android': account.apple_or_android,
-                }, '**')
+                message = self.format_account_name(
+                    {
+                        'account': account.account,
+                        'character': account.character,
+                        'svr': account.svr,
+                        'apple_or_android': account.apple_or_android,
+                    },
+                    '**',
+                )
                 logger.info(message)
                 push_content.append(message)
         # 当天已完成的账号不算"本次执行", 只在下面的总进度里体现
@@ -497,8 +502,18 @@ class ScriptTask(
         start_evozone = 1
         start_realmraid = 1
 
+        # 获取协战次数
         if self.evozone_enabled() or self.conf.assist_battle_config.realmraid_enable:
             start_evozone, start_realmraid = self.get_assist_battle_count()
+
+        # TODO 限时活动强力式神免费领
+        if (
+            self.conf.daily_config.courtyard_affairs_enable
+            and start_evozone > 0
+            and self.daily_window
+        ):
+            self.run_sign_act()
+            self.goto_page(page_main)
 
         # 邮件领取
         if (
@@ -895,6 +910,49 @@ class ScriptTask(
         return hits
 
     FRIEND_LIKE_NAME_CONFIRM = 6
+    # 点开好友失败时最多点几次：回顶后列表仍在弹性回弹时，第一下点击常被
+    # 游戏当成「停止滚动」吞掉（16480/16512 实测都是第一下失败、第二下就中）。
+    FRIEND_LIKE_PICK_RETRY = 2
+
+    def _pick_friend(self, name: str, x: int, y: int) -> bool:
+        """点开指定好友并确认右侧名字换成目标，失败时按新坐标重试。
+
+        每次重试前都重新截图 + OCR 定位，绝不复用上一帧的 (x, y)：
+        列表一旦移位，旧坐标就会点到相邻好友身上。
+        所有尝试都要过 `_verify_friend_chat_name` 才算成功，不会给错人点赞。
+        """
+        for attempt in range(1, self.FRIEND_LIKE_PICK_RETRY + 1):
+            if attempt > 1:
+                self.screenshot()
+                hits = [h for h in self._friend_list_hits({name}) if h[0] == name]
+                if hits:
+                    _, x, y = hits[0]
+                    logger.info('重试点开好友 [%s]：重新定位到 (%d,%d)', name, x, y)
+                else:
+                    logger.info(
+                        '重试点开好友 [%s]：当前帧列表里没看到它，仍用原坐标 (%d,%d)',
+                        name, x, y
+                    )
+            self.device.click(x=x, y=y, control_name='friend_pick')
+            self.device.click_record_clear()
+            sleep(0.6)
+            if self._verify_friend_chat_name(name):
+                if attempt > 1:
+                    logger.info(
+                        '第 %d 次点击后右侧名字对上 [%s]，重试成功', attempt, name
+                    )
+                return True
+            if attempt < self.FRIEND_LIKE_PICK_RETRY:
+                logger.warning(
+                    '第 %d/%d 次点开 [%s] 后右侧名字对不上，准备重试',
+                    attempt, self.FRIEND_LIKE_PICK_RETRY, name
+                )
+            else:
+                logger.warning(
+                    '第 %d/%d 次点开 [%s] 后仍对不上，重试次数用尽，放弃该好友',
+                    attempt, self.FRIEND_LIKE_PICK_RETRY, name
+                )
+        return False
 
     def _verify_friend_chat_name(self, target: str) -> bool:
         """点进好友后，等右侧资料区顶部名字变成目标名（最多 6 帧 × 0.3s）。
@@ -1064,12 +1122,11 @@ class ScriptTask(
             for name, x, y in self._friend_list_hits(pending):
                 if name not in pending:
                     continue
-                self.device.click(x=x, y=y, control_name='friend_pick')
-                self.device.click_record_clear()
-                sleep(0.6)
-                self.screenshot()
-                if not self._verify_friend_chat_name(name):
-                    logger.warning('点赞跳过：点开后名字对不上，目标=%s', name)
+                if not self._pick_friend(name, x, y):
+                    logger.warning(
+                        '点赞跳过：点开后名字对不上（已试 %d 次），目标=%s',
+                        self.FRIEND_LIKE_PICK_RETRY, name
+                    )
                     continue
                 result = self._like_current_friend()
                 if result == 'liked':
@@ -1318,6 +1375,42 @@ class ScriptTask(
         if self.conf.assist_battle_config.switch_soul_enable:
             con.switch_soul_config.enable = True
         self.run_realmraid_core(con)
+
+    def run_sign_act(self):
+        """运行签到领式神活动"""
+        logger.hr('Run Sign Act', 3)
+        try:
+            self.goto_page(page_sign_act)
+            while 1:
+                self.screenshot()
+                if self.appear(
+                    self.I_REWARD_EXIST, interval=0.8
+                ) and self.appear_then_click(self.I_REWARD_BOX, interval=0.8):
+                    logger.info('Sign act get reward')
+                    sleep(2)
+                    continue
+                if self.appear_then_click(self.I_CANCEL_DOWNLOAD, interval=0.8):
+                    continue
+                if self.appear(self.I_SUMMON_OVER, interval=0.8) or self.appear(
+                    self.I_UI_REWARD, interval=0.8
+                ):
+                    self.click(random_click(ltrb=(False, False, True, False)))
+                    logger.info('Sign Act finished')
+                    continue
+                if self.appear_then_click(self.I_UI_BACK_RED, interval=0.8):
+                    continue
+                if not self.appear(self.I_CHECK_SIGN_ACT):
+                    logger.info('Wait for summon over')
+                    continue
+                if not self.appear(self.I_REWARD_EXIST, interval=0.8) and self.appear(
+                    self.I_CHECK_SIGN_ACT, interval=0.8
+                ):
+                    logger.info('Sign Act finished')
+                    break
+            self.goto_page(page_main)
+            return
+        except Exception as e:
+            logger.warning('无法前往式神领取界面，应该不是新角色不符合领取条件', e)
 
 
 if __name__ == '__main__':
