@@ -959,32 +959,81 @@ class ScriptTask(
         logger.warning('连续 2 次点赞后图标仍是白态，放弃，避免重复消耗当天点赞')
         return 'failed'
 
-    def _ensure_friend_group_expanded(self) -> bool:
-        """确保当前展开的是同区好友组（判「到了」不判「点了」）"""
-        self.screenshot()
-        if self.appear(self.I_FRIEND_GROUP_EXPANDED):
-            return True
-        if self.appear(self.I_FRIEND_GROUP_FOLDED):
-            self.appear_then_click(
-                self.I_FRIEND_GROUP_FOLDED, action=self.C_FRIEND_GROUP_SWITCH
-            )
-            sleep(1.0)
-            self.screenshot()
-            return bool(self.appear(self.I_FRIEND_GROUP_EXPANDED))
-        logger.warning('好友分组状态认不出来，跳过点赞')
-        return False
+    FRIEND_LIKE_GROUP_SWITCH_SETTLE = 1.0
+    # 跨区标题行 y：跨区展开时紧跟同区标题(y≈207)，同区展开时被挤到列表底(y≈582)。
+    FRIEND_LIKE_CROSS_TITLE_Y = 300
 
-    def _switch_to_cross_group(self) -> bool:
-        """同区找完还没齐 -> 展开跨区好友组"""
+    def _friend_group_state(self) -> str:
+        """当前展开的分组：'same' 同区 / 'cross' 跨区 / 'unknown' 认不出。
+
+        两组互斥展开，只看同区标题行的三角两态即可判定，两种布局下都成立；
+        **不依赖跨区标题行的固定坐标** —— 那个 y 会从 587 变到 207。
+        16416 实测(11-05)：跨区展开 0.699/0.987，同区展开 1.000/0.733。
+        """
         self.screenshot()
-        if not self.appear(self.I_FRIEND_CROSS_FOLDED):
-            return bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
-        self.appear_then_click(
-            self.I_FRIEND_CROSS_FOLDED, action=self.C_CROSS_GROUP_SWITCH
+        expanded = bool(self.appear(self.I_FRIEND_GROUP_EXPANDED))
+        folded = bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
+        if expanded and not folded:
+            state = 'same'
+        elif folded and not expanded:
+            state = 'cross'
+        else:
+            state = 'unknown'
+        logger.info(
+            '好友分组状态：%s（同区展开态=%s，折叠态=%s）', state, expanded, folded
         )
-        sleep(1.0)
-        self.screenshot()
-        return bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
+        return state
+
+    def _friend_group_state_by_ocr(self) -> str:
+        """三角两态都认不出时的兜底：用 OCR 读「跨区好友」标题行的 y 判布局。"""
+        results = self.O_FRIEND_LIST.detect_and_ocr(self.device.image)
+        for item in results:
+            text = self._normalize_friend_name(getattr(item, 'ocr_text', ''))
+            if '跨区' not in text:
+                continue
+            y = int(item.box[0, 1] + self.O_FRIEND_LIST.roi[1])
+            state = 'cross' if y < self.FRIEND_LIKE_CROSS_TITLE_Y else 'same'
+            logger.info('好友分组状态（OCR 兜底）：%s，跨区标题行 y=%d', state, y)
+            return state
+        logger.warning('好友分组状态 OCR 兜底也没读到「跨区好友」标题行')
+        return 'unknown'
+
+    def _friend_group_state_checked(self) -> str:
+        state = self._friend_group_state()
+        return state if state != 'unknown' else self._friend_group_state_by_ocr()
+
+    def _switch_friend_group(self, target: str, label: str) -> bool:
+        """确保当前展开的是 target 分组；已经是就不点，点完必须确认状态真的翻转。
+
+        旧写法假设「进页面一定展开同区」，且 _switch_to_cross_group 在跨区展开时
+        认不出 I_FRIEND_CROSS_FOLDED 会**不点击就返回 True**，结果两组扫的是同一组。
+        """
+        state = self._friend_group_state_checked()
+        if state == target:
+            logger.info('好友分组（%s组）本来就是展开态，无需点击', label)
+            return True
+        if state == 'unknown':
+            logger.warning(
+                '好友分组状态认不出，不点击三角（避免误点好友），跳过%s组', label
+            )
+            return False
+        rule = (
+            self.C_FRIEND_GROUP_SWITCH if target == 'same'
+            else self.C_CROSS_GROUP_SWITCH
+        )
+        x, y = rule.coord()
+        logger.info('切换到%s组：点击分组标题三角 (%d,%d)', label, x, y)
+        self.device.click(x, y, control_name=rule.name)
+        self.device.click_record_clear()
+        sleep(self.FRIEND_LIKE_GROUP_SWITCH_SETTLE)
+        after = self._friend_group_state_checked()
+        if after != target:
+            logger.warning(
+                '切到%s组失败：点击后状态=%s，本组可能扫不到', label, after
+            )
+            return False
+        logger.info('已切到%s组（状态 %s → %s）', label, state, after)
+        return True
 
     def _log_friend_scan_timeout(self, label: str, timer: Timer, rounds: int, pending: set) -> None:
         """扫描被超时掐断时留痕：只看日志就能分清「扫完了」和「没扫完」"""
@@ -1077,17 +1126,19 @@ class ScriptTask(
             return False
 
         pending = set(names)
-        if not self._ensure_friend_group_expanded():
-            return False
-        # 进好友页时列表常停在上次滚动的位置（切号/切组都会保留），先拉回顶部再扫
-        self._friend_list_to_top()
-        self._search_friend_group(pending, '同区')
-        if pending:
-            if self._switch_to_cross_group():
-                self._friend_list_to_top()
-                self._search_friend_group(pending, '跨区')
-            else:
-                logger.warning('切不到跨区好友分组，放弃剩余好友')
+        # 进好友页时展开的可能是任意一组（16416 实测跨区展开），且各组各自保存滚动位置。
+        # 两组**无条件各走一遍**：不假设初始状态，也不因第一组切换失败就放弃第二组。
+        for label, target in (('同区', 'same'), ('跨区', 'cross')):
+            if not pending:
+                logger.info('好友点赞名单已全部处理完，跳过%s组', label)
+                break
+            if not self._switch_friend_group(target, label):
+                logger.warning(
+                    '%s组切换失败，仍扫描当前列表（可能重复扫到上一组）', label
+                )
+            # 切号/切组都会保留上次的滚动位置，先拉回顶部再扫，避免漏掉顶部好友
+            self._friend_list_to_top()
+            self._search_friend_group(pending, label)
         if pending:
             logger.warning('以下好友没找到，放弃点赞：%s', '、'.join(sorted(pending)))
         logger.info('好友点赞完成：%d/%d', len(names) - len(pending), len(names))

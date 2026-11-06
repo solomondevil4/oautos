@@ -29,9 +29,9 @@ class AssistBattleAssets:
 	# 现世勾协位置3 
 	I_PRESENT_WORLD_JADE_ASSIST_3 = RuleImage(roi_front=(881,124,30,28), roi_back=(667,111,251,328), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_present_world_jade_assist_3.png")
 	# 好友界面点赞图标-未点赞(白色) 
-	I_FRIEND_LIKE_OFF = RuleImage(roi_front=(617,140,28,31), roi_back=(611,134,40,43), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_like_off.png")
+	I_FRIEND_LIKE_OFF = RuleImage(roi_front=(617,140,28,31), roi_back=(605,130,60,80), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_like_off.png")
 	# 好友界面点赞图标-已点赞(橙黄色) 
-	I_FRIEND_LIKE_ON = RuleImage(roi_front=(617,140,28,31), roi_back=(611,134,40,43), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_like_on.png")
+	I_FRIEND_LIKE_ON = RuleImage(roi_front=(617,140,28,31), roi_back=(605,130,60,80), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_like_on.png")
 	# 好友分组标题行-展开态(倒三角)，表示当前展开的是同区好友 
 	I_FRIEND_GROUP_EXPANDED = RuleImage(roi_front=(464,171,17,10), roi_back=(450,155,45,45), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_group_expanded.png")
 	# 好友分组标题行-折叠态(右三角)，表示当前展开的是跨区好友 

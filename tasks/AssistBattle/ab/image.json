@@ -39,7 +39,7 @@
     "itemName": "friend_like_off",
     "imageName": "ab_like_off.png",
     "roiFront": "617,140,28,31",
-    "roiBack": "611,134,40,43",
+    "roiBack": "605,130,60,80",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "好友界面点赞图标-未点赞(白色)"
@@ -48,7 +48,7 @@
     "itemName": "friend_like_on",
     "imageName": "ab_like_on.png",
     "roiFront": "617,140,28,31",
-    "roiBack": "611,134,40,43",
+    "roiBack": "605,130,60,80",
     "method": "Template matching",
     "threshold": 0.8,
     "description": "好友界面点赞图标-已点赞(橙黄色)"

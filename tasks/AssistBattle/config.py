@@ -187,7 +187,8 @@ class AssistBattleDailyConfig(BaseModel):
         title='给指定好友点赞',
         description='开启后每次执行一键协战时，进入好友界面给下方列表里的好友点赞；'
         '已经点过（橙黄色）的会自动跳过。好友组找不到会再去「跨区好友」找一遍，'
-        '都没有就跳过，不影响其它日常。',
+        '都没有就跳过，不影响其它日常。\n'
+        '上限只能扫描约1/3好友，如需稳定扫到好友，需要置顶对应的好友',
     )
     friend_like_names: MultiLine = Field(
         default='',
