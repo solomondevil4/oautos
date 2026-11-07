@@ -1410,7 +1410,7 @@ class ScriptTask(
             self.goto_page(page_main)
             return
         except Exception as e:
-            logger.warning('无法前往式神领取界面，应该不是新角色不符合领取条件', e)
+            logger.warning('无法前往式神领取界面，应该不是新角色不符合领取条件: %s', e)
 
 
 if __name__ == '__main__':
