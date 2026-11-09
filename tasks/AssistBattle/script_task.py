@@ -920,7 +920,9 @@ class ScriptTask(
         每次重试前都重新截图 + OCR 定位，绝不复用上一帧的 (x, y)：
         列表一旦移位，旧坐标就会点到相邻好友身上。
         所有尝试都要过 `_verify_friend_chat_name` 才算成功，不会给错人点赞。
+        点之前先清掉「好友羁绊提升」遮罩：弹窗盖着时点列表坐标等于点在弹窗上。
         """
+        self._dismiss_friendship_popup(f'点开好友 [{name}] 前')
         for attempt in range(1, self.FRIEND_LIKE_PICK_RETRY + 1):
             if attempt > 1:
                 self.screenshot()
@@ -970,6 +972,200 @@ class ScriptTask(
             sleep(0.3)
         return False
 
+    # ----------------------------------------------------------------------
+    #  「好友羁绊提升」遮罩弹窗
+    #  出现时机(11-09 用户反馈)：从庭院点进好友页时、以及点赞让羁绊值达标时，
+    #  一次流程里可能连弹多次。弹窗盖住整个好友界面，不点掉它会有两个连锁故障：
+    #    - 左侧列表 OCR 读到的是弹窗正文，找不到目标好友，白滑到上限后放弃；
+    #    - 点赞图标被盖住，_friend_like_state 一律 unknown，把成功误报成失败。
+    #  判据 = 复用 DailyTrifles 的 I_FRIENDSHIP_UP(弹窗右上角粉紫 X，27x28)：
+    #  11-09 实测 7 帧正常好友页(好友/最近/选中/详情/聊天)全部不命中，弹窗帧命中。
+    #  兜底 = OCR 标题含「提升」：中文 OCR 把「羁绊」读成「藕」或整字漏掉
+    #  (实测读出「好友藕提升」「好友提升」)，所以不能整串比对。
+    # ----------------------------------------------------------------------
+    # 单次调用最多点 30 下：游戏里这个弹窗是**连锁**的 —— 点掉一个又弹一个，
+    # 一次点赞跨多级羁绊时能连弹十几个，所以上限给到 30（用户 11-09 指定）。
+    # 30 仍低于防卡死阈值没问题：每次点击后都 click_record_clear，
+    # 记录队列始终只剩 1 条，永远攒不到 device.py:256 要求的 10 条。
+    FRIENDSHIP_POPUP_TRIES = 30
+    FRIENDSHIP_POPUP_SETTLE = 0.6
+    FRIENDSHIP_POPUP_KEYWORD = '提升'
+    FRIENDSHIP_POPUP_KEYWORD_MAX = 8
+    # OCR 兜底的廉价门控：弹窗带全屏遮罩，好友列表区(x160-520,y170-560)的平均亮度
+    # 会被压到 ~63，正常好友页 ~169（11-09 实测 9 帧）。亮度正常就不花那 0.44 秒跑 OCR，
+    # 只是省时间，判不出来时行为等于「只有素材判据」，不会更差。
+    FRIENDSHIP_POPUP_DIM_ROI = (160, 170, 520, 560)
+    FRIENDSHIP_POPUP_DIM_MEAN = 110.0
+    # 弹窗 X 素材的标定左上角，只用来判断「素材有没有漂移」（漂了仍按安全落点点）
+    FRIENDSHIP_POPUP_X = (1147, 80)
+    FRIENDSHIP_POPUP_DRIFT = 6
+
+    def _friendship_popup_visible(self, use_ocr: bool = True) -> bool:
+        """当前帧是否有「好友羁绊提升」遮罩弹窗（素材为主、OCR 兜底）。
+
+        use_ocr=False 只跑 27x28 的模板匹配（约 16ms），用于扫描循环的每轮检查；
+        其余位置带 OCR 兜底，但先过一道「画面是否被压暗」的廉价门控（约 1ms），
+        只有像有遮罩时才花 0.44 秒跑 OCR，正常好友页不会白等。
+        """
+        self.screenshot()
+        if self.appear(self.I_FRIENDSHIP_UP):
+            return True
+        if not use_ocr:
+            return False
+        if not self._screen_dimmed():
+            return False
+        # 只能用 detect_and_ocr 取文字：RuleOcr.ocr() 在 Full 模式下返回的是
+        # **合并后的坐标元组**（module/ocr/sub_ocr.py:25-63），不是文字，
+        # 拿它比对关键词永远命中不了 —— 20:45 实测踩过一次。
+        for item in self.O_FRIENDSHIP_UP_TITLE.detect_and_ocr(self.device.image):
+            text = self._normalize_friend_name(getattr(item, 'ocr_text', ''))
+            if (
+                text
+                and self.FRIENDSHIP_POPUP_KEYWORD in text
+                and len(text) <= self.FRIENDSHIP_POPUP_KEYWORD_MAX
+            ):
+                logger.info('羁绊提升弹窗 OCR 兜底命中：%s', text)
+                return True
+        return False
+
+    def _screen_dimmed(self) -> bool:
+        """好友列表区是否被遮罩压暗（弹窗/全屏黑幕的廉价判据）。"""
+        image = self.device.image
+        if image is None:
+            return False
+        x1, y1, x2, y2 = self.FRIENDSHIP_POPUP_DIM_ROI
+        h, w = image.shape[:2]
+        patch = image[min(y1, h):min(y2, h), min(x1, w):min(x2, w)]
+        if patch.size == 0:
+            return False
+        mean = float(patch.mean())
+        if mean < self.FRIENDSHIP_POPUP_DIM_MEAN:
+            logger.info('好友列表区偏暗（平均亮度 %.1f），可能有遮罩，启用 OCR 兜底', mean)
+            return True
+        return False
+
+    def _dismiss_friendship_popup(self, reason: str, use_ocr: bool = True) -> bool:
+        """有「好友羁绊提升」弹窗就点它的右上角 X；返回 True = 确认当前没有弹窗。
+
+        判据 = I_FRIENDSHIP_UP（27x28 的粉紫 X，来自 DailyTrifles，全局唯一一份，
+        不再复制第二份 png）；落点 = C_FRIENDSHIP_POPUP_CLOSE，**单独**锁在
+        (1150,84,10,9) 这块「弹窗 X 中偏左上」的小框里（约 10x9 像素）。
+        为什么要单独限制落点：这两个按钮在屏幕上是**物理重叠**的 ——
+        弹窗 X 自身是 1147~1173 / 80~107 的一个小圆盘（中心 1160,94，半径约 14），
+        好友页右上角红 X 的可点圆盘实测在 (1155,97,43,42)（中心 ≈1176,117，
+        半径 21~29，11-09 实机量取），弹窗 X 的右下大半个身子都压在它上面。
+        本框任一点距弹窗中心 ≤14.1（必在图标内，点得中）、距红 X 圆心 ≥30.2
+        （在最保守的 29 半径之外，踩不到）—— 是唯一两全的那一小块。
+        连锁弹窗点着点着弹窗没了，多点的这一下原本会落在红 X 上把好友页关掉
+        （11-09 实测真的关过一次），现在只会点在两个按钮之间的底板上。
+        素材没命中而 OCR 命中时(标题换位置/素材过期)，同样用这个安全落点。
+        另外 `_ensure_friends_tab` / `_search_friend_group` 里都加了「是否还在好友页」
+        的复查：万一真被点关了，会重新进入而不是继续对着庭院 OCR。
+
+        这个弹窗是连锁的（点掉一个再弹一个），所以是「点到看不见为止」，
+        上限 FRIENDSHIP_POPUP_TRIES 只是防死循环，不是为了省点击。
+        循环结束后再复查一帧：第 N 下恰好点成功时不该误报「连点 N 次仍在」。
+        """
+        for attempt in range(1, self.FRIENDSHIP_POPUP_TRIES + 1):
+            if not self._friendship_popup_visible(use_ocr=use_ocr):
+                if attempt > 1:
+                    logger.info(
+                        '羁绊提升弹窗已关闭（点了 %d 次），当前阶段：%s', attempt - 1, reason
+                    )
+                return True
+            if attempt == 11:
+                logger.warning(
+                    '羁绊提升弹窗已连点 10 次仍在（上限 %d），疑似连锁弹窗过多，%s',
+                    self.FRIENDSHIP_POPUP_TRIES, reason,
+                )
+            box = list(self.I_FRIENDSHIP_UP.roi_front)
+            drift = max(
+                abs(box[0] - self.FRIENDSHIP_POPUP_X[0]),
+                abs(box[1] - self.FRIENDSHIP_POPUP_X[1]),
+            )
+            if drift > self.FRIENDSHIP_POPUP_DRIFT:
+                logger.warning(
+                    '羁绊提升弹窗的 X 落点漂移到 %s，与标定 %s 差 %d 像素；'
+                    '落点仍按安全框走，若连点多次关不掉请看这里',
+                    box, self.FRIENDSHIP_POPUP_X, drift,
+                )
+            x, y = self.C_FRIENDSHIP_POPUP_CLOSE.coord()
+            logger.info(
+                '检测到「好友羁绊提升」弹窗（%s），点右上角 X (%d,%d)：第 %d/%d 次',
+                reason, x, y, attempt, self.FRIENDSHIP_POPUP_TRIES,
+            )
+            self.device.click(x, y, control_name='friendship_popup_close')
+            self.device.click_record_clear()
+            sleep(self.FRIENDSHIP_POPUP_SETTLE)
+        # 第 N 下点完之后没再判过，这里补一帧，避免「刚好点成功」被记成失败
+        if not self._friendship_popup_visible(use_ocr=use_ocr):
+            logger.info(
+                '羁绊提升弹窗在最后一次点击后关闭（共点 %d 次），当前阶段：%s',
+                self.FRIENDSHIP_POPUP_TRIES, reason,
+            )
+            return True
+        logger.warning(
+            '羁绊提升弹窗连点 %d 次仍在，%s 的识别可能失败',
+            self.FRIENDSHIP_POPUP_TRIES, reason,
+        )
+        return False
+
+    def _in_friends_window(self) -> bool:
+        """是否已经站在好友界面（「好友」或「最近」标签都算）。
+
+        page_friends 的判定素材 I_CHECK_FRIENDS 只在「好友」标签命中(11-09 实测)；
+        停在「最近」时 get_current_page() 认不出，goto_page(page_friends) 会再点一次
+        庭院入口（此时无效）直到超时，整块点赞被跳过。所以用列表头文字兜底认「最近」。
+        """
+        self.screenshot()
+        if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+            return True
+        results = self.O_FRIEND_LIST.detect_and_ocr(self.device.image)
+        for item in results:
+            text = self._normalize_friend_name(getattr(item, 'ocr_text', ''))
+            if '最近联系人' in text or '最近组队' in text:
+                logger.info('识别到「最近」标签页（%s），判定已在好友界面', text)
+                return True
+        return False
+
+    def _ensure_friends_tab(self) -> bool:
+        """确保左侧是「好友」列表，而不是「最近」。
+
+        11-09 实测(16416)：「最近」页点好友只在右侧打开聊天记录，
+        既没有「完成任务」卡片、也没有可点的任务点赞按钮，点顶部点赞图标两次仍是白态；
+        而且 I_CHECK_FRIENDS 在「最近」页不命中，导航会认不出当前页。
+        所以进页面后固定点一次「好友」标签，再用判定素材确认。
+
+        先确认还站在好友界面：羁绊弹窗连点时，最后多出来的那一下有可能落在
+        右上角红 X 上把好友页关掉（落点已尽量避开，见 _dismiss_friendship_popup），
+        真关了就直接重进一次，不能盲点 (186,109) —— 那在庭院是一个无关按钮。
+        """
+        self.screenshot()
+        if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+            return True
+        if not self._in_friends_window():
+            logger.warning('已不在好友界面（可能被弹窗连点误触右上角红X关掉），重新进入一次')
+            try:
+                self.goto_page(page_friends)
+            except RequestHumanTakeover:
+                raise
+            except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as error:
+                logger.warning('重进好友界面失败，本号跳过点赞: %r', error)
+                self.device.click_record_clear()
+                return False
+            self._dismiss_friendship_popup('重新进入好友页时')
+        x, y = self.C_FRIENDS_TAB.coord()
+        logger.info('好友页不在「好友」标签（可能在最近页），点固定位置 (%d,%d) 切回', x, y)
+        self.device.click(x, y, control_name=self.C_FRIENDS_TAB.name)
+        self.device.click_record_clear()
+        sleep(self.FRIEND_LIKE_GROUP_SWITCH_SETTLE)
+        self.screenshot()
+        if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+            logger.info('已切回「好友」标签，后续点赞才能生效')
+            return True
+        logger.warning('点「好友」标签后仍认不出好友列表，本号跳过点赞')
+        return False
+
     def _friend_like_state(self) -> str:
         """重新截图后判点赞图标状态：on / off / unknown。
 
@@ -994,7 +1190,10 @@ class ScriptTask(
 
         已点赞（on）直接跳过，绝不因为「点过赞」反复重试；
         每次判定都重新截图，点击后立即清点击记录，避免同一坐标累计触发过密异常。
+        点赞会让羁绊值达标而立刻弹出「好友羁绊提升」遮罩，把点赞图标整个盖住，
+        所以每次判状态前都先关弹窗，否则成功也会被读成 unknown -> failed。
         """
+        self._dismiss_friendship_popup('点赞前')
         state = self._friend_like_state()
         if state == 'on':
             return 'already'
@@ -1007,6 +1206,7 @@ class ScriptTask(
                 logger.warning('第 %d 次点赞时白态图标已不匹配，放弃', attempt)
                 return 'failed'
             sleep(0.8)
+            self._dismiss_friendship_popup('点赞后')
             state = self._friend_like_state()
             if state == 'on':
                 return 'liked'
@@ -1018,32 +1218,80 @@ class ScriptTask(
         return 'failed'
 
     FRIEND_LIKE_GROUP_SWITCH_SETTLE = 1.0
-    # 跨区标题行 y：跨区展开时紧跟同区标题(y≈207)，同区展开时被挤到列表底(y≈582)。
+    # 跨区标题行 y：跨区展开时紧跟同区标题(列表顶部 y≈268、滚动后 y≈215)，
+    # 同区展开时被挤到列表底(y≈587~598)。
     FRIEND_LIKE_CROSS_TITLE_Y = 300
+    # 分组标题三角的搜索带。**不能用固定 45x45 小窗**：好友标题行是吸顶的，
+    # 但列表滚到最顶部时上面会多出一行「Q搜索」，标题被压低约 50px
+    # （16416 实测 11-09：滚动状态 y≈174，回顶后 y≈223），
+    # 原来只覆盖 174 那一档的小窗在回顶后就两态全 False —— 不是素材老化，
+    # 是落点漂移（同一帧素材匹配分数 0.987~1.000，两张 png 完全没问题）。
+    FRIEND_GROUP_TRIANGLE_BAND = (456, 150, 34, 160)   # 「好友」标题所在带
+    FRIEND_GROUP_CROSS_BAND = (456, 560, 34, 110)      # 「跨区」标题所在带（仅取落点用）
+    FRIEND_GROUP_TRIANGLE_THRESHOLD = 0.9
+
+    def _locate_group_triangle(self, band: tuple, refresh: bool = True):
+        """在 band 里找**最靠上**的分组标题三角。
+
+        返回 (shape, x, y, w, h, score)，shape 为 'expanded'(▼) / 'folded'(▶)；
+        带内一个都没命中返回 None。
+
+        为什么取「最靠上」而不是固定坐标：同区/跨区两组互斥展开，跨区标题要么
+        紧贴在好友标题下面(y≈215~268)，要么被挤到列表底(y≈587~598)，而好友标题
+        永远在它上面（滚走时吸顶）。所以带内最上面那个三角一定是「好友」标题行的。
+        """
+        if refresh:
+            self.screenshot()
+        best = None
+        for shape, rule in (
+            ('expanded', self.I_FRIEND_GROUP_EXPANDED),
+            ('folded', self.I_FRIEND_GROUP_FOLDED),
+        ):
+            # 这里临时把素材的搜索区改成这条带，用完必须还原：
+            # roi_back 是素材共享的标定，被改脏后别的调用点会跟着错
+            saved = rule.roi_back
+            try:
+                rule.roi_back = band
+                hits = rule.match_all(
+                    self.device.image, threshold=self.FRIEND_GROUP_TRIANGLE_THRESHOLD
+                )
+            finally:
+                rule.roi_back = saved
+            if not hits:
+                continue
+            hit = min(hits, key=lambda item: item[2])
+            if best is None or hit[2] < best[1][2]:
+                best = (shape, hit)
+        if best is None:
+            return None
+        shape, (score, x, y, w, h) = best
+        return shape, x, y, w, h, score
 
     def _friend_group_state(self) -> str:
         """当前展开的分组：'same' 同区 / 'cross' 跨区 / 'unknown' 认不出。
 
-        两组互斥展开，只看同区标题行的三角两态即可判定，两种布局下都成立；
-        **不依赖跨区标题行的固定坐标** —— 那个 y 会从 587 变到 207。
-        16416 实测(11-05)：跨区展开 0.699/0.987，同区展开 1.000/0.733。
+        两组互斥展开，只看**好友标题行**的三角形态：▼ = 同区展开，▶ = 跨区展开。
+        **不依赖跨区标题行的固定坐标** —— 那个 y 会在 215 与 587 之间跳。
+        16416 实测(11-09 实机)：滚动态 ▼(463,170)=1.000 / ▶(466,167)=0.987，
+        回顶态 ▼(463,223) 命中、▶ 0.000（旧的 45x45 小窗就是在这里判不出来）。
         """
-        self.screenshot()
-        expanded = bool(self.appear(self.I_FRIEND_GROUP_EXPANDED))
-        folded = bool(self.appear(self.I_FRIEND_GROUP_FOLDED))
-        if expanded and not folded:
-            state = 'same'
-        elif folded and not expanded:
-            state = 'cross'
-        else:
-            state = 'unknown'
+        found = self._locate_group_triangle(self.FRIEND_GROUP_TRIANGLE_BAND)
+        if found is None:
+            logger.warning(
+                '好友分组状态：认不出好友标题行的三角（带 %s 内 ▼/▶ 都没命中 0.9）',
+                self.FRIEND_GROUP_TRIANGLE_BAND,
+            )
+            return 'unknown'
+        shape, _x, y, _w, _h, score = found
+        state = 'same' if shape == 'expanded' else 'cross'
         logger.info(
-            '好友分组状态：%s（同区展开态=%s，折叠态=%s）', state, expanded, folded
+            '好友分组状态：%s（好友标题三角%s y=%d 分数 %.3f）',
+            state, '▼' if shape == 'expanded' else '▶', y, score,
         )
         return state
 
     def _friend_group_state_by_ocr(self) -> str:
-        """三角两态都认不出时的兜底：用 OCR 读「跨区好友」标题行的 y 判布局。"""
+        """三角认不出时的兜底：用 OCR 读「跨区好友」标题行的 y 判布局。"""
         results = self.O_FRIEND_LIST.detect_and_ocr(self.device.image)
         for item in results:
             text = self._normalize_friend_name(getattr(item, 'ocr_text', ''))
@@ -1063,8 +1311,8 @@ class ScriptTask(
     def _switch_friend_group(self, target: str, label: str) -> bool:
         """确保当前展开的是 target 分组；已经是就不点，点完必须确认状态真的翻转。
 
-        旧写法假设「进页面一定展开同区」，且 _switch_to_cross_group 在跨区展开时
-        认不出 I_FRIEND_CROSS_FOLDED 会**不点击就返回 True**，结果两组扫的是同一组。
+        点击落点从「认出来的那个三角」算，不再用 click.json 里的固定坐标：
+        固定坐标 (465,168) 在回顶态正好落在「Q搜索」搜索框上，一点就弹输入法。
         """
         state = self._friend_group_state_checked()
         if state == target:
@@ -1075,13 +1323,24 @@ class ScriptTask(
                 '好友分组状态认不出，不点击三角（避免误点好友），跳过%s组', label
             )
             return False
-        rule = (
-            self.C_FRIEND_GROUP_SWITCH if target == 'same'
-            else self.C_CROSS_GROUP_SWITCH
+        band = (
+            self.FRIEND_GROUP_TRIANGLE_BAND if target == 'same'
+            else self.FRIEND_GROUP_CROSS_BAND
         )
-        x, y = rule.coord()
-        logger.info('切换到%s组：点击分组标题三角 (%d,%d)', label, x, y)
-        self.device.click(x, y, control_name=rule.name)
+        found = self._locate_group_triangle(band, refresh=False)
+        if found is None:
+            logger.warning(
+                '切到%s组失败：%s 带内没找到分组标题三角（可能被挤到列表外），跳过本组',
+                label, band,
+            )
+            return False
+        _shape, bx, by, bw, bh, score = found
+        x, y = bx + bw // 2, by + bh // 2
+        logger.info(
+            '切换到%s组：点击分组标题三角 (%d,%d)，三角框 (%d,%d,%d,%d) 分数 %.3f',
+            label, x, y, bx, by, bw, bh, score,
+        )
+        self.device.click(x, y, control_name=f'friend_group_switch_{target}')
         self.device.click_record_clear()
         sleep(self.FRIEND_LIKE_GROUP_SWITCH_SETTLE)
         after = self._friend_group_state_checked()
@@ -1118,7 +1377,19 @@ class ScriptTask(
             if timer.reached():
                 self._log_friend_scan_timeout(label, timer, scroll_count - 1, pending)
                 return
+            # 弹窗盖着时 OCR 读到的是弹窗正文，先关掉再找好友。
+            # 每轮只跑模板匹配（16ms），不开 OCR —— detect_and_ocr 实测稳态 0.44s，
+            # 20 轮就是 9 秒，会吃掉 60s 的扫描预算；遮罩在别的调用点也会被处理
+            self._dismiss_friendship_popup(f'扫描{label}组第 {scroll_count} 轮', use_ocr=False)
             self.screenshot()
+            # 廉价复查（素材 16ms）：万一连点误触右上角红X把好友页关了，
+            # 继续往下就是对着庭院找好友、白滑到上限。只有这一格不过才去跑 OCR。
+            if not self.appear(GameUiAssets.I_CHECK_FRIENDS) and not self._in_friends_window():
+                logger.warning(
+                    '扫描%s组第 %d 轮时已离开好友界面（弹窗连点可能误触右上角红X），本组中止',
+                    label, scroll_count,
+                )
+                return
             for name, x, y in self._friend_list_hits(pending):
                 if name not in pending:
                     continue
@@ -1167,7 +1438,8 @@ class ScriptTask(
             logger.warning('「给指定好友点赞」已开启，但好友名列表是空的')
             return False
         try:
-            if self.get_current_page() != page_friends:
+            # 「最近」标签页也算站在好友界面，否则 goto_page 认不出当前页会空转
+            if not self._in_friends_window():
                 self.goto_page(page_friends)
         except RequestHumanTakeover:
             # 需要人工介入的一律往上抛，别吞
@@ -1177,9 +1449,11 @@ class ScriptTask(
             logger.warning('进入好友界面失败，跳过点赞: %r', error)
             self.device.click_record_clear()
             return False
-        self.screenshot()
-        if not self.appear(GameUiAssets.I_CHECK_FRIENDS):
-            logger.warning('没能确认进入好友界面，跳过点赞')
+        # 进好友页时游戏可能先弹「好友羁绊提升」遮罩（离线期间好友给你点赞/送礼），
+        # 不关掉的话接下来的列表 OCR 全读到弹窗文字；关掉后再固定点「好友」标签，
+        # 确保停在「好友」列表而不是「最近」（最近页点好友只出聊天记录，点赞无效）
+        self._dismiss_friendship_popup('进入好友页时')
+        if not self._ensure_friends_tab():
             return False
 
         pending = set(names)

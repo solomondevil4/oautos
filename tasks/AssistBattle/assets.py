@@ -13,10 +13,14 @@ class AssistBattleAssets:
 
 
 	# Click Rule Assets
-	# 好友分组标题行三角(切回同区好友)
+	# 【已停用,仅作标定参考】同区标题行三角的旧固定落点。好友标题行会随「Q搜索」吸顶/顶出而在 y174~223 之间移动,固定落点会点到搜索框,现改用识别到的三角框中心(_switch_friend_group)
 	C_FRIEND_GROUP_SWITCH = RuleClick(roi_front=(465,168,12,12), roi_back=(465,168,12,12), name="friend_group_switch")
-	# 跨区好友分组标题行三角(展开跨区好友)
+	# 【已停用,仅作标定参考】跨区标题行三角的旧固定落点,现改用识别到的三角框中心(_switch_friend_group)
 	C_CROSS_GROUP_SWITCH = RuleClick(roi_front=(464,584,12,16), roi_back=(464,584,12,16), name="cross_group_switch")
+	# 好友页顶部「好友」标签(切回好友列表;「最近」页点好友只出聊天记录,点赞无效)
+	C_FRIENDS_TAB = RuleClick(roi_front=(186,109,12,12), roi_back=(186,109,12,12), name="friends_tab")
+	# 「好友羁绊提升」弹窗右上角粉紫X的中偏左上落点区。弹窗X标定框1147,80,27,28(中心1160,94,半径约14),好友页红X的可点圆盘实测1155,97,43x42(中心1176,117,半径21~29);两者在屏幕上物理重叠,只有弹窗X的左上角离圆盘够远。本框任一点距弹窗X中心<=14.1(必在图标内)、距红X圆心>=30.2(在最保守的半径29之外),既点得中弹窗又踩不到红X
+	C_FRIENDSHIP_POPUP_CLOSE = RuleClick(roi_front=(1150,84,10,9), roi_back=(1150,84,10,9), name="friendship_popup_close")
 
 
 	# Image Rule Assets
@@ -66,6 +70,8 @@ class AssistBattleAssets:
 	O_FRIEND_LIST = RuleOcr(roi=(140,150,360,450), area=(140,150,360,450), mode="Full", method="Default", keyword="", name="friend_list")
 	# 好友界面右侧聊天区顶部对象名(点人后二次确认) 
 	O_FRIEND_CHAT_NAME = RuleOcr(roi=(600,100,180,35), area=(600,100,180,35), mode="Single", method="Default", keyword="", name="friend_chat_name")
+	# 「好友羁绊提升」弹窗标题(OCR兜底判据;中文OCR会把「羁绊」读成「藕」或漏字,按「提升」模糊匹配) 
+	O_FRIENDSHIP_UP_TITLE = RuleOcr(roi=(440,85,380,90), area=(440,85,380,90), mode="Full", method="Default", keyword="", name="friendship_up_title")
 
 
 	# Swipe Rule Assets

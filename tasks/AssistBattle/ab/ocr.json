@@ -43,5 +43,14 @@
     "method": "Default",
     "keyword": "",
     "description": "好友界面右侧聊天区顶部对象名(点人后二次确认)"
+  },
+  {
+    "itemName": "friendship_up_title",
+    "roiFront": "440,85,380,90",
+    "roiBack": "440,85,380,90",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "「好友羁绊提升」弹窗标题(OCR兜底判据;中文OCR会把「羁绊」读成「藕」或漏字,按「提升」模糊匹配)"
   }
 ]
