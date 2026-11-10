@@ -97,6 +97,10 @@ class AssistBattlePushConfig(BaseModel):
         default=False,
         description='推送每个账号购买寄售券后的剩余数量（逐个账号列出）',
     )
+    consignment_csv_enable: bool = Field(
+        default=False,
+        description='仅适配企业微信机器人：开启后推送文本不再显示寄售券数量，本轮全部账号的券数以 CSV 文件直接发到群里（账号多时不再被截断）；其他渠道（如邮件）不需要发文件，开启后将看不到券数',
+    )
 
 
 class AssistBattleBattleConfig(BaseModel):

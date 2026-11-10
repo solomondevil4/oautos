@@ -49,6 +49,8 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
     _rotation_pause_timer: Timer = None
     # 距上次开局在这个间隔内，视为同一轮内的自动重排（换人/打突破回来），不再做开局等待
     ROTATION_OPENING_RECENT_GAP: timedelta = timedelta(minutes=5)
+    # 建房后等队伍房间出现的上限（秒）：确认弹窗消失只代表点击生效，房间还在加载动画里
+    ROOM_WAIT_TIMEOUT: float = 5.0
 
     def _exit_matcher(self) -> ExitMatcher:
         return pages.any_of(self.I_E_SETTINGS_BUTTON, self.I_E_AUTO_ROTATE_ON, self.I_E_AUTO_ROTATE_OFF)
@@ -1087,8 +1089,37 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         return self.collect_treasure_box() or self.collect_paper_man_reward()
 
     def enter_team(self) -> bool:
-        """进入战斗组队页面"""
-        return self.create_room(self.I_EXP_CREATE_TEAM) and self.ensure_private() and self.create_ensure()
+        """进入战斗组队页面
+
+        建房确认弹窗消失只代表点击已生效，队伍房间可能还在加载动画里。若此时立刻
+        返回，主循环下一帧会在过渡画面上误判回入口页，又因 current_count == 0 立即
+        再次建房，第二次点击落到已加载房间的挑战按钮上，随后截图卡死并触发
+        GameStuckError（douji2 2026-11-10 事故：队伍其实建成了却一个邀请都没发）。
+        因此这里等左上角「协战队伍」标志出现再返回，最多等 ROOM_WAIT_TIMEOUT 秒。
+        """
+        if not (
+            self.create_room(self.I_EXP_CREATE_TEAM)
+            and self.ensure_private()
+            and self.create_ensure()
+        ):
+            logger.warning('Enter team failed: create room flow did not finish')
+            return False
+
+        wait_timer = Timer(self.ROOM_WAIT_TIMEOUT)
+        wait_timer.start()
+        frames = 0
+        while True:
+            self.screenshot()
+            frames += 1
+            if self.appear(self.I_GI_IN_ROOM):
+                logger.info(f'Room ready after {frames} frames')
+                return True
+            if wait_timer.reached():
+                logger.warning(
+                    f'Room not ready in {self.ROOM_WAIT_TIMEOUT}s ({frames} frames), '
+                    'return False and let main loop retry'
+                )
+                return False
 
 if __name__ == "__main__":
     from module.config.config import Config

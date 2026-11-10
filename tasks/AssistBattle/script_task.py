@@ -1,3 +1,6 @@
+import csv
+import io
+
 import numpy as np
 from datetime import date, datetime, time, timedelta
 from difflib import SequenceMatcher
@@ -138,9 +141,13 @@ class ScriptTask(
                 message += f"-个突{result['realmraid_done']}次"
         if self.conf.daily_config.find_jade_enable:
             message += f"-{result['jade_flag']}"
-        # 寄售券余额跟在勾协后面; 没买或没读到券数就不显示
+        # 寄售券余额跟在勾协后面; 开启 CSV 模式时数据走文件, 文本里不显示
         ticket = result.get('consignment_ticket')
-        if self.conf.push_config.consignment_ticket_enable and ticket is not None:
+        if (
+            ticket is not None
+            and not self.conf.push_config.consignment_csv_enable
+            and self.conf.push_config.consignment_ticket_enable
+        ):
             message += f"-寄售券{ticket}"
         return message
 
@@ -196,6 +203,42 @@ class ScriptTask(
             lines.append(self.format_account_name(result, '…') + f"-{flag}")
         return lines
 
+    def build_consignment_csv(self, results):
+        """本轮寄售券数据生成 CSV 字节(带 BOM, Excel 直开), 内存生成不落盘。
+
+        :return: (文件名, 字节内容) 或 None(没有买券数据)
+        """
+        rows = [
+            (
+                result.get('character', ''),
+                result.get('svr', ''),
+                result.get('account', ''),
+                result.get('consignment_ticket'),
+            )
+            for result in results
+            if not result.get('skipped') and result.get('consignment_ticket') is not None
+        ]
+        if not rows:
+            return None
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(['角色', '服务器', '账号', '寄售券数量'])
+        writer.writerows(rows)
+        filename = f'寄售券_{self.config.config_name}.csv'
+        # utf-8-sig 带 BOM, Excel 直接打开中文不乱码
+        return filename, ('\ufeff' + buf.getvalue()).encode('utf-8')
+
+    def format_consignment_summary(self, results) -> str:
+        """寄售券汇总行: 账号数 + 合计张数"""
+        tickets = [
+            result.get('consignment_ticket')
+            for result in results
+            if not result.get('skipped') and result.get('consignment_ticket') is not None
+        ]
+        if not tickets:
+            return ''
+        return f"寄售券汇总：{len(tickets)}个账号买券，合计 {sum(tickets)} 张"
+
     def run_push_result(self, results):
         """输出协战结果: 今日总进度只列次数不正常的账号"""
         logger.hr('AssistBattle Result', 2)
@@ -250,15 +293,71 @@ class ScriptTask(
                 message += self.format_assist_count(result)
                 logger.info(message)
                 push_content.append(message)
-        # 推送协战完成结果
+        # 推送协战完成结果: 超过渠道单条上限时, 完整明细走文件
         if self.conf.push_config.result_push_enable:
-            self.config.notifier.push(
-                title='多号任务完成',
-                content='{}\n{}'.format(
-                    self.config.config_name,
-                    '\n'.join(push_content),
-                ),
+            # 寄售券 CSV: 开启且有买券数据时必发(文本里已不含券数, 数量从文件获取)
+            csv_file = (
+                self.build_consignment_csv(results)
+                if self.conf.push_config.consignment_csv_enable
+                else None
             )
+            content = '{}\n{}'.format(
+                self.config.config_name,
+                '\n'.join(push_content),
+            )
+            # 超过渠道单条上限(约 4KB): 先发文件, 成功才发摘要, 失败退回全文
+            if len(content.encode('utf-8')) > 3800:
+                if csv_file:
+                    bought = sum(
+                        1 for r in results
+                        if not r.get('skipped')
+                        and r.get('consignment_ticket') is not None
+                    )
+                    if self.config.notifier.push_file(*csv_file):
+                        summary = [
+                            line for line in push_content
+                            if line.startswith('切换失败')
+                        ]
+                        summary.append(
+                            f'明细过长，寄售券数据（{bought}个账号）已以 CSV 文件发送'
+                        )
+                        self.config.notifier.push(
+                            title='多号任务完成',
+                            content='{}\n{}'.format(
+                                self.config.config_name,
+                                '\n'.join(summary),
+                            ),
+                        )
+                        return
+                    logger.warning('Push csv file failed, fallback to plain text (may be truncated)')
+                    self.config.notifier.push(title='多号任务完成', content=content)
+                    return
+                # 未开启 CSV: 完整内容写 txt 文件发送
+                txt_name = f'协战明细_{datetime.now():%Y%m%d_%H%M%S}.txt'
+                if self.config.notifier.push_file(
+                    txt_name, content.encode('utf-8')
+                ):
+                    summary = [
+                        line for line in push_content
+                        if line.startswith('切换失败')
+                    ]
+                    summary.append('明细过长，完整内容已以文件发送')
+                    self.config.notifier.push(
+                        title='多号任务完成',
+                        content='{}\n{}'.format(
+                            self.config.config_name,
+                            '\n'.join(summary),
+                        ),
+                    )
+                    return
+                logger.warning('Push txt file failed, fallback to plain text (may be truncated)')
+                self.config.notifier.push(title='多号任务完成', content=content)
+                return
+            # 未超限: 单条文本推送
+            self.config.notifier.push(title='多号任务完成', content=content)
+            # 寄售券 CSV: 无论账号多少, 开启且有数据就发文件
+            if csv_file:
+                self.config.notifier.push_file(*csv_file)
 
     def run_switch_account(self):
         """切换账号并执行协战任务"""

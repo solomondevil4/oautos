@@ -311,11 +311,12 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
             logger.warning(f'unwanted {monster_name}')
             self.ui_click(self.I_TRACE_TRUE, self.I_TRACE_FALSE)
             return False
-        # 获取排序后的悬赏信息列表
-        ordered_wq_infos = self.get_ordered_wq_infos(num_want)
+        # 获取排序后的悬赏信息列表(详情页妖怪名参与去重)
+        ordered_wq_infos = self.get_ordered_wq_infos(num_want, monster_name)
         if not ordered_wq_infos:
             logger.info('Current wanted quest skipped all, cancel it')
             self.ui_click(self.I_TRACE_TRUE, self.I_TRACE_FALSE)
+            self.ui_click_until_disappear(self.I_UI_BACK_RED)
             return False
         wq_call_dict: dict[WQType, Callable] = {
             WQType.CHALLENGE: self.challenge,
@@ -327,6 +328,7 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
         if not wq_info:
             logger.info('Current wanted quests can not be executed')
             self.ui_click(self.I_TRACE_TRUE, self.I_TRACE_FALSE)
+            self.ui_click_until_disappear(self.I_UI_BACK_RED)
             return False
         try:
             logger.info(f'Choose wq: {wq_info}')
@@ -348,7 +350,7 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
             return wq_info
         return None
 
-    def get_ordered_wq_infos(self, num_want: int) -> List[WQInfo]:
+    def get_ordered_wq_infos(self, num_want: int, monster_name: str = '') -> List[WQInfo]:
         """获取当前悬赏妖怪页面排好序的信息列表, 会自动排除无法执行的悬赏"""
         wq_type_ocr = [
             self.O_WQ_TYPE_1,
@@ -366,7 +368,8 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
         wq_info_list = []
         for i in range(4):
             wq_info = self.build_wq_info(
-                wq_type_ocr[i], wq_info_ocr[i], goto_btn_list[i], num_want
+                wq_type_ocr[i], wq_info_ocr[i], goto_btn_list[i], num_want,
+                monster_name,
             )
             if not wq_info:
                 continue
@@ -440,6 +443,7 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
         info_rule: RuleOcr,
         goto_btn_rule: RuleImage,
         num_want: int,
+        monster_name: str = '',
     ) -> Optional[WQInfo]:
         """
         构建单条悬赏信息
@@ -469,7 +473,7 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
             return None
         wq_dest, wq_number = parsed
         do_num = num_want // wq_number + (num_want % wq_number > 0)
-        return WQInfo(wq_type, wq_dest, wq_number, goto_btn_rule, do_num)
+        return WQInfo(wq_type, wq_dest, wq_number, goto_btn_rule, do_num, monster_name)
 
     def challenge(self, goto_btn, num):
         self.ui_click(goto_btn, self.I_WQC_FIRE)
