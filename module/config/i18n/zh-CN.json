@@ -61,6 +61,8 @@
   "member_rotation_switch_wait_help": "队长换人后隔多久重新开局。要留够小号切号（约 40~50 秒）并重新进游戏的时间，太短会邀请到还没上线的人。",
   "member_rotation_member_idle_help": "小号在探索界面待命多久还没等到邀请就结束本轮，交给调度器重开，防止卡死不动。",
   "member_rotation_current_index_help": "脚本自动维护，不要手改。当前正在带的小号在名单里的位置。",
+  "member_rotation_played_count_help": "脚本自动维护，不要手改。当前这个小号累计打了多少场，跨重启、跨打突破都不会丢。想让它重打一轮，把这个数改成 0 即可。",
+  "member_rotation_paused_until_help": "脚本自动维护，不要手改。队长去打突破时写入的恢复时刻，小号读到它就会退队回庭院待命，等队长回来重新邀请。",
   "member_rotation_current_member_help": "脚本自动维护，不要手改。当前正在带的小号角色名，小号侧读的就是这个值。",
   "member_rotation_assigned_help": "脚本自动维护，不要手改。小号上次接到的指派，用来判断队长有没有换人。",
   "opening_wait": "开局等待",

@@ -14,7 +14,7 @@ from tasks.Component.GeneralInvite.general_invite import GeneralInvite
 from tasks.Component.ReplaceShikigami.replace_shikigami import ReplaceShikigami
 from tasks.Exploration.assets import ExplorationAssets
 from tasks.Exploration.config import ChooseRarity, UpType, ExplorationLevel, AutoRotate, UserStatus, Exploration
-from tasks.Exploration.rotation import normalize_index, parse_member_list, read_leader_state
+from tasks.Exploration.rotation import normalize_index, parse_member_list, read_leader_state, read_config_json
 from tasks.Component.GeneralBattle.general_battle import GeneralBattle, ExitMatcher, BattleContext, BattleAction
 from tasks.GameUi.game_ui import GameUi
 from tasks.Utils.config_enum import ShikigamiClass
@@ -40,6 +40,13 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
     _rotation_abort: datetime = None
     # 小号启动即切号：设 True 表示这次 run 只为切号，不进探索
     _rotation_boot_switch: bool = False
+    # 累计场数：本次运行已经并进 played_count 的基线（每个任务实例都从 0 起）
+    _played_base: int = None
+    # 小号：队长去打突破的截止时刻，设了值表示本轮要先退队回庭院待命
+    _rotation_pause_until: datetime = None
+    # 暂停检测自己的读盘节流。不能和 rotation_poll_due 共用：先执行的一方会把
+    # 窗口占掉，另一方的判断永远拿不到 due，等于失效。
+    _rotation_pause_timer: Timer = None
     # 距上次开局在这个间隔内，视为同一轮内的自动重排（换人/打突破回来），不再做开局等待
     ROTATION_OPENING_RECENT_GAP: timedelta = timedelta(minutes=5)
 
@@ -111,6 +118,22 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
             self.rotation_do_switch()
             self.set_next_run(task='Exploration', success=True, finish=True, server=False,
                               target=datetime.now().replace(microsecond=0) + timedelta(seconds=10))
+            raise TaskEnd
+        # 队长去打突破：主动退队回庭院待命，别占着队伍等 38 分钟待命上限
+        if self._rotation_pause_until:
+            self.rotation_leave_team()
+            # 回场时刻必须是 paused_until 之后 1 分钟，不能提前：提前到会被
+            # rotation_member_pause() 再命中一次暂停分支（判据是 until > now），
+            # 白退一次队又被弹回来。代价是比队长晚 1 分钟到位，而队长那边的
+            # 邀请窗口只有 wait_time（2 分钟，每 20 秒重发），余量偏紧 ——
+            # 把队长的「间隔时间」(scrolls_cd) 调小，让小号提前到位等邀请更稳。
+            back = self._rotation_pause_until + timedelta(minutes=1)
+            logger.info(
+                f'Rotation: 小号已退队回庭院待命，突破预计 {self._rotation_pause_until.strftime("%H:%M:%S")} '
+                f'结束，{back.strftime("%H:%M:%S")} 回来等队长邀请'
+            )
+            self.set_next_run(task='Exploration', success=True, finish=True, server=False,
+                              target=back)
             raise TaskEnd
         # 换人 / 切号：先把探索和队伍退干净，别让「是否退出队伍」的框把导航带偏
         if self._rotation_next_run or self._rotation_switch_target:
@@ -480,7 +503,20 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         # 打突破回来属于同一轮内的自动重排，把「上次开局时间」预支到回来那一刻，
         # 免得队长打完突破重跑探索时又白等一次开局等待。
         if self.rotation_enabled():
-            self._rotation_cfg.last_open_time = next_run.replace(microsecond=0).isoformat()
+            # 这下面几次写盘之后就 raise TaskEnd，post_process 不会执行，
+            # 所以累计场数必须在这里落盘，否则最后这几场会丢
+            self.rotation_sync_played()
+            rot = self._rotation_cfg
+            rot.last_open_time = next_run.replace(microsecond=0).isoformat()
+            if self.rotation_is_leader():
+                # 广播给小号：这段时间别占着队伍，退队回庭院等邀请
+                rot.paused_until = next_run.replace(microsecond=0).isoformat()
+                logger.info(
+                    f'Rotation: 队长去打突破，{next_run.strftime("%H:%M:%S")} 前暂停邀请，'
+                    f'当前小号 {rot.current_member or "(未锚定)"} 将退队待命'
+                )
+            else:
+                rot.paused_until = ''
             self.config.save()
             logger.info('Rotation: 打突破期间不算新开局，回来不做开局等待')
         self.goto_page(pages.page_exploration)
@@ -515,9 +551,88 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
     def rotation_is_leader(self) -> bool:
         return self.rotation_enabled() and self.user_status == UserStatus.LEADER
 
+    @staticmethod
+    def _as_int(value, default: int = 0) -> int:
+        """配置里读回来的可能是字符串（GUI 写的），统一转 int，非法值不抛异常"""
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def rotation_played_total(self) -> int:
+        """本号累计已打场数。
+
+        只在轮换开启时读持久化值。单人和绘卷模式直接返回内存里的 current_count，
+        行为与改动前逐字一致 —— 单人绘卷不会被这个累计逻辑碰到。
+        """
+        if not self.rotation_enabled():
+            return self.current_count
+        return max(0, self._as_int(self._rotation_cfg.played_count))
+
+    def rotation_sync_played(self) -> int:
+        """把本次运行新打的场数并进持久化的累计场数并落盘，返回累计值。
+
+        为什么需要：current_count 是内存值（`BaseTask.__init__` 置 0），任务一结束
+        就丢。中途去打突破、脚本重启、游戏掉线，回来都会从 0 重计，导致「设 120 场」
+        实际是「每次启动最多 120 场」。这里每帧调一次，只有场数真变了才写盘。
+        """
+        if not self.rotation_enabled():
+            return self.current_count
+        rot = self._rotation_cfg
+        if self._played_base is None:
+            # 每次任务启动 current_count 都是 0（BaseTask.__init__），基线也从 0 起算。
+            # 不能取成「第一次调用时的场数」，否则那几场会被当成已并入而漏掉。
+            self._played_base = 0
+        delta = self.current_count - self._played_base
+        if delta <= 0:
+            return max(0, self._as_int(rot.played_count))
+        total = max(0, self._as_int(rot.played_count)) + delta
+        rot.played_count = total
+        self._played_base = self.current_count
+        self.config.save()
+        logger.info(
+            f'Rotation: 本号累计已打 {total}/{self._config.exploration_config.minions_cnt} 场'
+            f'（本次运行 {self.current_count} 场）'
+        )
+        return total
+
+    def rotation_reset_played(self, reason: str) -> None:
+        """累计场数清零：换下一个小号、名单跑完一轮、跨天，都算新的一轮"""
+        rot = self._rotation_cfg
+        played = max(0, self._as_int(rot.played_count))
+        if played == 0:
+            return
+        rot.played_count = 0
+        self._played_base = self.current_count
+        self.config.save()
+        logger.info(f'Rotation: 本号累计场数 {played} → 0（{reason}）')
+
+    def rotation_reset_played_if_new_day(self) -> None:
+        """跨天清零，语义是「每个号每天打满 minions_cnt 场」。
+
+        判据用 last_open_time 的日期：突破会把 last_open_time 预支到 30 分钟后，
+        仍在同一天，不会误判成跨天。
+        """
+        if not self.rotation_enabled():
+            return
+        if max(0, self._as_int(self._rotation_cfg.played_count)) == 0:
+            return
+        raw = (self._rotation_cfg.last_open_time or '').strip()
+        if not raw:
+            return
+        try:
+            last = datetime.fromisoformat(raw).date()
+        except ValueError:
+            logger.warning(f'Rotation: last_open_time 不是合法时间（{raw!r}），跳过跨天清零')
+            return
+        today = datetime.now().date()
+        if last == today:
+            return
+        self.rotation_reset_played(f'跨天，上次开局 {last}')
+
     def rotation_quota_reason(self) -> str:
         """本号配额是否到点：'count' 战斗次数 / 'time' 时间 / '' 未到"""
-        if self.current_count >= self._config.exploration_config.minions_cnt:
+        if self.rotation_played_total() >= self._config.exploration_config.minions_cnt:
             return 'count'
         if datetime.now() - self.start_time >= self.limit_time:
             return 'time'
@@ -592,6 +707,8 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         if not self.rotation_is_leader():
             self.rotation_member_boot_check()
             return
+        # 跨天清零要读旧的 last_open_time，必须放在下面锚定/预支之前
+        self.rotation_reset_played_if_new_day()
         rot = self._rotation_cfg
         members = parse_member_list(rot.member_list)
         if not members:
@@ -689,6 +806,8 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         if not members:
             logger.warning('Rotation: 小号名单为空，按普通结束处理')
             return
+        # 这个号的配额已经打满，累计场数清零，下个号从 0 开始数
+        self.rotation_reset_played(f'换下一个小号（本号已打 {self.rotation_played_total()} 场）')
         index = normalize_index(rot.current_index, len(members))
         next_index = index + 1
         if next_index >= len(members):
@@ -755,6 +874,47 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         self._rotation_switch_target = target
         return True
 
+    def rotation_pause_poll_due(self) -> bool:
+        """暂停检测专用节流：每 5 秒读一次队长配置，和换人检测各走各的定时器"""
+        if self._rotation_pause_timer is None:
+            self._rotation_pause_timer = Timer(5)
+            self._rotation_pause_timer.start()
+            return True
+        if self._rotation_pause_timer.reached():
+            self._rotation_pause_timer.reset()
+            return True
+        return False
+
+    def rotation_member_pause(self) -> datetime | None:
+        """小号：队长正在打突破时返回暂停截止时刻，否则 None。
+
+        队长在 `activate_realm_raid` 里把 `paused_until` 写进自己的配置，这里每 5 秒
+        读一次（独立定时器，不抢换人检测的节流窗口）。命中后本轮要主动退队回庭院
+        待命 —— 否则小号会占着队伍一直空转，只能等 38 分钟待命上限自己超时。
+        """
+        if not self.rotation_enabled() or self.user_status != UserStatus.MEMBER:
+            return None
+        leader = (self._rotation_cfg.leader_config or '').strip()
+        if not leader:
+            return None
+        if not self.rotation_pause_poll_due():
+            return None
+        data = read_config_json(leader)
+        if not data:
+            return None
+        rot = ((data.get('exploration') or {}).get('rotation')) or {}
+        raw = (rot.get('paused_until') or '').strip()
+        if not raw:
+            return None
+        try:
+            until = datetime.fromisoformat(raw)
+        except ValueError:
+            logger.warning(f'Rotation: 队长配置的 paused_until 不是合法时间（{raw!r}）')
+            return None
+        if until <= datetime.now():
+            return None
+        return until
+
     def rotation_do_switch(self) -> bool:
         """小号：切到队长点名的角色（账号卡从本配置的切号名单里按角色名找）"""
         target_name = (self._rotation_switch_target or '').strip()
@@ -791,6 +951,9 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
 
     def check_exit(self, current_page: pages.Page | None) -> bool:
         # True 表示要退出这个任务
+        # 先把本号已打场数并进持久化计数：打突破、重启、掉线都不再从头数。
+        # 非轮换模式这里会直接返回，不读也不写配置。
+        self.rotation_sync_played()
         # 开局等待：还没建房，直接收尾去排期，别先白请一次客
         if self._rotation_abort:
             return True
@@ -813,6 +976,19 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
             return True
         if self.user_status == UserStatus.MEMBER:
             if self.rotation_enabled():
+                # 队长去打突破：退队回庭院待命，别占着队伍又等不到邀请。
+                # 只能在战斗之外的页面收手，否则等于中途退出战斗。
+                pause_until = self.rotation_member_pause()
+                if pause_until is not None and current_page not in (
+                    pages.page_battle, pages.page_battle_prepare,
+                    pages.page_battle_result, pages.page_reward,
+                ):
+                    self._rotation_pause_until = pause_until
+                    logger.info(
+                        f'Rotation: 队长去打突破，{pause_until.strftime("%H:%M:%S")} 前暂停邀请，'
+                        f'小号本轮退队回庭院待命'
+                    )
+                    return True
                 if self.rotation_member_check():
                     return True
                 if datetime.now() - self.wait_start_time >= self.rotation_member_idle_exit():

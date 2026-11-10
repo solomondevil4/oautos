@@ -91,7 +91,9 @@ class MemberRotation(BaseModel):
     opening_wait: TimeDelta = Field(title='开局等待', default=TimeDelta(minutes=2), description='member_rotation_opening_wait_help')
     switch_wait: TimeDelta = Field(title='换号等待', default=TimeDelta(minutes=2), description='member_rotation_switch_wait_help')
     member_idle_exit: TimeDelta = Field(title='小号待命上限', default=TimeDelta(minutes=8), description='member_rotation_member_idle_help')
-    # 下面三个由脚本自动维护，不要手改
+    # 下面几个由脚本自动维护，不要手改
+    played_count: int = Field(title='本号已打场数（自动）', default=0, ge=0, description='member_rotation_played_count_help')
+    paused_until: str = Field(title='突破暂停至（自动）', default='', description='member_rotation_paused_until_help')
     current_index: int = Field(title='当前序号（自动）', default=0, ge=0, description='member_rotation_current_index_help')
     current_member: str = Field(title='当前小号（自动）', default='', description='member_rotation_current_member_help')
     assigned_member: str = Field(title='已接指派（自动）', default='', description='member_rotation_assigned_help')
