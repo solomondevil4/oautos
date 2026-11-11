@@ -520,6 +520,36 @@ class ScriptTask(MallNavbar, Summon, DailyTriflesAssets):
             self.run_buy_sushi()
         self.goto_page(page_main)
 
+    def _close_store_popup(self) -> int:
+        """关掉商店里的活动引导弹窗。半透明遮罩会让所有点击失效，必须先清掉。
+
+        判据用 I_UI_BACK_RED（弹窗右上角的 ✕）。实测 11-11 配置4 事故：
+        礼包屋首页 0.506、礼包屋日常页 0.545、杂货铺 0.512、商店街 0.475，
+        全部远低于 0.8 阈值；而「奇惠购物节·拾惠券」弹窗出现时是 0.976@(1043,159)。
+        所以这个判据在本流程里命中就一定是弹窗，不会误关正常按钮。
+
+        为什么必须清：遮罩是半透明的，I_UI_BACK_YELLOW / I_MALL_SUNDRY 等
+        照样能匹配 0.93~0.97，所有「点没点成功」的判断都会失灵，点击全部被
+        遮罩吞掉，点满 10 次就撞 GameTooManyClickError 重启游戏
+        （11-11 18:13 / 18:46 / 18:54 三次报错都是这个）。
+
+        :return: 本次关闭了几个弹窗
+        """
+        closed = 0
+        for i in range(3):
+            if not self.appear(self.I_UI_BACK_RED):
+                break
+            logger.info(f'商店出现活动弹窗，点击右上角关闭（第 {i + 1} 次）')
+            # 不能传 interval：appear_then_click 内部用它新建 Timer，刚创建时
+            # reached() 为 False 会直接返回、一个点击都不发（base_task.py:224-231）
+            self.appear_then_click(self.I_UI_BACK_RED)
+            closed += 1
+            sleep(1)  # 等关窗动画
+            self.screenshot()
+        if closed:
+            logger.info(f'[store] 活动弹窗已关闭 {closed} 个')
+        return closed
+
     def run_store_sign(self):
         logger.hr("store sign", 2)
         if self.config.daily_trifles.today_is_done("store_sign"):
@@ -528,9 +558,15 @@ class ScriptTask(MallNavbar, Summon, DailyTriflesAssets):
         self.config.daily_trifles.done_record.store_sign_dt = datetime.now()
         self.goto_page(page_store_gift_room)
         self.screenshot()
+        # 进礼包屋就可能弹活动引导，先清掉再点标签
+        self._close_store_popup()
+        self.screenshot()
         self.appear_then_click(self.I_GIFT_RECOMMEND, interval=1)
         logger.info("Enter store sign")
         sleep(1)  # 等个动画
+        self.screenshot()
+        # 点完右侧标签后约 1 秒会再弹一次（11-11 事故的触发点），这里必须复查
+        self._close_store_popup()
         self.screenshot()
         if not self.appear(self.I_GIFT_SIGN):
             logger.warning("There is no gift sign")
@@ -573,6 +609,10 @@ class ScriptTask(MallNavbar, Summon, DailyTriflesAssets):
         # I_MALL_SUNDRY（底部「杂货铺」）：商城首页 0.9773、杂货铺 0.9149、体力页 0.9149、
         # 礼包屋 0.9496 都命中（礼包屋本来就是商城子页），庭院 0.2094 不命中。阈值 0.8。
         # 在商城里就不调 goto_page（省掉一次不必要的导航），真掉到庭院去了才回商城兜底。
+        self.screenshot()
+        # 上一次礼包屋流程可能留下活动弹窗。遮罩下 I_MALL_SUNDRY 照样命中 0.97，
+        # 直接往下走就会在遮罩上点底部导航（11-11 18:13 点杂货铺 9 次崩在这里）。
+        self._close_store_popup()
         self.screenshot()
         if not self.appear(self.I_MALL_SUNDRY):
             self.goto_page(page_mall, confirm_wait=3)
