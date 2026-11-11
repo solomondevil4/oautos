@@ -673,14 +673,21 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         raise TaskEnd
 
     def activate_realm_raid(self, con_scrolls, con, current_page: pages.Page | None) -> None:
-        # 判断是否开启突破票检测。白名单只挑「顶栏看得见突破券、且不是马上就要去打突破」
-        # 的页面：结界突破页本身排除在外，否则会在突破页上再触发一次转场，来回空转。
-        if not con_scrolls.scrolls_enable or current_page is None or \
-                current_page not in (pages.page_exploration, pages.page_exp_entrance, pages.page_main):
+        """突破券检票入口：单刷走上游原判据，组队走顶栏动态定位。
+
+        用户 2026-11-11 定：单刷保留上游、组队用自建。两条路互不干扰 ——
+        单刷（huijuan1~4 / 配置4）连 `_raid_ticket_sample` 都不会碰，一次像素检测都不做。
+        """
+        if not con_scrolls.scrolls_enable or current_page is None:
             return
-        # 只服务组队轮换：单刷（huijuan1~4 / 配置4）是 scrolls_enable=True 但 rotation=False，
-        # 没有这道门的话，取样框修好后单刷也会在探索界面被拎去打突破。
+        # 单刷：rotation=False，原样沿用上游那套「固定素材 + 两页白名单」，不做任何优化
         if not self.rotation_enabled():
+            self._activate_realm_raid_upstream(con_scrolls, con, current_page)
+            return
+        # 组队轮换：白名单只挑「顶栏看得见突破券、且不是马上就要去打突破」的页面。
+        # 结界突破页本身排除在外，否则会在突破页上再触发一次转场，来回空转；
+        # 庭院比单刷多一个 —— `rotation_raid_on_leave` 退队那一刻通常就停在庭院。
+        if current_page not in (pages.page_exploration, pages.page_exp_entrance, pages.page_main):
             return
         sample = self._raid_ticket_sample(current_page)
         if sample is None:
@@ -703,6 +710,50 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         self._rotation_goto_realm_raid(
             con, con_scrolls, cu, total, getattr(current_page, 'name', current_page)
         )
+
+    def _activate_realm_raid_upstream(self, con_scrolls, con, current_page: pages.Page | None) -> None:
+        """单刷路径：原样沿用上游判据（写死两条素材 + 探索页/章节页白名单 + 阈值）。
+
+        上游按页面分两条素材取样：`page_exp_entrance` 用 `O_REALM_RAID_NUMBER1`，
+        探索页用 `O_REALM_RAID_NUMBER`。**这两条框在本机型的余量只有 8px**
+        （2026-11-11 实测：左边界 926~933 才能同时读对 `0/30` 和 `11/30`）：
+        探索页那条正对勾玉、恒返回 `0/0`，等于永不触发；章节页那条余票 ≥10 时准确，
+        个位数会虚增 10（0~9 读成 10~19），而 5 个单刷配置的阈值都是 25，高于虚增上限
+        19，所以不会假触发。**保持原样是为了「单刷零改动」**，不在这里做任何优化；
+        要读得准就切组队模式，那边走 `_raid_ticket_sample` 动态定位。
+        """
+        if current_page not in (pages.page_exploration, pages.page_exp_entrance):
+            return
+        if current_page == pages.page_exp_entrance:
+            cu, res, total = self.O_REALM_RAID_NUMBER1.ocr(self.device.image)
+        else:
+            cu, res, total = self.O_REALM_RAID_NUMBER.ocr(self.device.image)
+        # 读数不变就不落日志：check_exit 每帧都会检票，不然一轮能刷出上千行
+        self._raid_ticket_log(current_page, cu, total, con_scrolls.scrolls_threshold)
+        # 判断突破票数量
+        if cu < con_scrolls.scrolls_threshold:
+            return
+        logger.info(
+            f'RealmRaid: 单刷 {getattr(current_page, "name", current_page)} 突破券 '
+            f'{cu}/{total} 已达阈值 {con_scrolls.scrolls_threshold}，转去打突破'
+        )
+        # 关闭加成
+        if con.buff_gold_50_click or con.buff_gold_100_click or con.buff_exp_50_click or con.buff_exp_100_click:
+            self.goto_page(pages.page_main)
+            self.open_buff()
+            self.gold_50(is_open=False)
+            self.gold_100(is_open=False)
+            self.exp_50(is_open=False)
+            self.exp_100(is_open=False)
+            self.close_buff()
+        # 设置下次执行行时间
+        logger.info("RealmRaid and Exploration  set_next_run !")
+        next_run = datetime.now() + con_scrolls.scrolls_cd
+        self.goto_page(pages.page_exploration)
+        self.set_next_run(task='Exploration', success=False, finish=False, target=next_run)
+        self.set_next_run(task='RealmRaid', success=False, finish=False, server=False, target=datetime.now())
+        self.set_next_run(task='MemoryScrolls', success=False, finish=False, target=datetime.now())
+        raise TaskEnd
 
     def rotation_raid_on_leave(self) -> None:
         """退出组队那一刻再检一次突破券：队长票够直接去打突破，小号只回庭院等邀请。
