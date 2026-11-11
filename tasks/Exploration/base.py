@@ -1,11 +1,13 @@
 # This Python file uses the following encoding: utf-8
 # @author AzurTian
 import time
+import cv2
 import numpy as np
 from cached_property import cached_property
 from datetime import timedelta, datetime
 from module.atom.gif import RuleGif
 from module.atom.image import RuleImage
+from module.atom.ocr import RuleOcr
 from module.base.timer import Timer
 
 from tasks.Component.SwitchSoul.switch_soul import SwitchSoul
@@ -51,6 +53,19 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
     ROTATION_OPENING_RECENT_GAP: timedelta = timedelta(minutes=5)
     # 建房后等队伍房间出现的上限（秒）：确认弹窗消失只代表点击生效，房间还在加载动画里
     ROOM_WAIT_TIMEOUT: float = 5.0
+    # ---- 突破券检测 ----
+    # 顶栏突破券**不能写死坐标**：顶栏各项宽度会随数值位数变化，2026-11-11 实测同一台
+    # 设备的庭院图，突破券一次在 x=557、一次在 x=752（「挑战」那项的 1288 把后面整体
+    # 右推了近 200px）。所以改成「在顶栏里找数字串 → 逐个认 → 只认 total=30 的那个」。
+    RAID_TICKET_BAND: tuple = (4, 52)      # 顶栏纵向范围 (y0, y1)，数字高度固定在这条带里
+    RAID_TICKET_TOTAL: int = 30            # 突破券上限，读数的唯一身份校验依据
+    RAID_TICKET_INTERVAL: float = 2.0      # 同一页面两次检票的最小间隔（秒）；OCR 单次约 370ms
+    RAID_TICKET_RESCAN_CD: float = 10.0    # 全扫找不到券后，多久才允许重新全扫
+    # 突破券读数的上次值 (current, total)：check_exit 每帧都会检票，只在变化时落日志，
+    # 否则一轮探索能刷出上千行
+    _raid_ticket_last: tuple = None
+    # 小号票满但按分工不去打突破：同一读数只提醒一次，别每帧刷屏
+    _raid_member_skip: tuple = None
 
     def _exit_matcher(self) -> ExitMatcher:
         return pages.any_of(self.I_E_SETTINGS_BUTTON, self.I_E_AUTO_ROTATE_ON, self.I_E_AUTO_ROTATE_OFF)
@@ -140,6 +155,10 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         # 换人 / 切号：先把探索和队伍退干净，别让「是否退出队伍」的框把导航带偏
         if self._rotation_next_run or self._rotation_switch_target:
             self.rotation_leave_team()
+            # 退出组队那一刻是整轮里唯一「不在战斗、又看得见顶栏突破券」的时机，
+            # 就在这里分流：队长票够直接去打突破，小号票再多也只回庭院等组队。
+            # 这段可能 raise TaskEnd（队长去打突破），所以必须排在切号/排期之前。
+            self.rotation_raid_on_leave()
         self.goto_page(pages.page_exploration)
         con = self._config.exploration_config
         if con.buff_gold_50_click or con.buff_gold_100_click or con.buff_exp_50_click or con.buff_exp_100_click:
@@ -320,6 +339,11 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
     def open_expect_level(self):
         swipeCount = 0
         config_exploration_level = self.config.exploration.exploration_config.exploration_level
+        mainline_tab = RuleOcr(
+            name='exploration_mainline_tab',
+            mode='Full', method='Default', keyword='主线',
+            roi=(900, 140, 370, 460), area=(900, 140, 370, 460),
+        )
         while True:
             # 判断有无目标章节
             self.screenshot()
@@ -338,6 +362,9 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
             # 有则跳出检测
             if self.appear(self.I_E_EXPLORATION_CLICK) or result and len(result) > 0:
                 break
+            # 新版探索地图默认停在玩法页签，先切回主线显示章节
+            if not exp_level_enum_list and self.ocr_appear_click(mainline_tab, interval=1):
+                continue
             if self.appear_then_click(self.I_UI_CONFIRM, interval=1):
                 continue
             if self.appear_then_click(self.I_UI_CONFIRM_SAMLL, interval=1):
@@ -478,18 +505,136 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
         self.fire_monster_type = 'normal'
         return self.I_NORMAL_BATTLE_BUTTON
 
-    def activate_realm_raid(self, con_scrolls, con, current_page: pages.Page | None) -> None:
-        # 判断是否开启突破票检测
-        if not con_scrolls.scrolls_enable or current_page is None or \
-                current_page not in (pages.page_exploration, pages.page_exp_entrance):
+    def _raid_ticket_read(self, box) -> tuple | None:
+        """按一个文字行框读突破券，只有 total 正好等于上限 30 才认。
+
+        突破券在顶栏里是唯一的「x/30」：挑战是纯数字、勾玉是纯数字、插画券是「x/50」，
+        所以 total==30 本身就是身份校验 —— 位置扫偏了读到别的资源，自然会在这里被否掉
+        （旧的两条固定框就是这么露馅的：一个读到勾玉 460，一个读成卷边花纹 0/303）。
+        """
+        x, y, w, h = box
+        pad = 4
+        roi = (max(0, x - pad), max(0, y - pad), w + pad * 2, h + pad * 2)
+        try:
+            cu, _, total = RuleOcr(
+                roi=roi, area=roi, mode='DigitCounter', method='Default',
+                keyword='', name=f'raid_ticket_{x}_{y}'
+            ).ocr(self.device.image)
+        except Exception as e:
+            logger.warning(f'RealmRaid: 突破券 OCR 异常 {type(e).__name__}: {e}')
+            return None
+        if total != self.RAID_TICKET_TOTAL or cu > total:
+            return None
+        return cu, total
+
+    def _raid_ticket_runs(self) -> list:
+        """在顶栏里找出所有「像数字串」的候选框，纯像素定位、不含任何写死坐标。
+
+        顶栏背景是半透明深色、数字是浅灰白；弹窗会把整屏压暗（实测顶栏峰值灰度
+        250→109），所以基线取**局部中值**而不是固定阈值，压暗后依旧分得开。
+        """
+        y0, y1 = self.RAID_TICKET_BAND
+        image = self.device.image
+        if image is None:
+            return []
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)[y0:y1, :]
+        if gray.size == 0:
+            return []
+        diff = cv2.subtract(gray, cv2.medianBlur(gray, 21))
+        mask = (diff > 18).astype(np.uint8)
+        count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+        chars = []
+        for i in range(1, count):
+            x, y, w, h, area = stats[i]
+            # 单个数字笔画的尺寸；更小的点基本都是背景花纹噪点
+            if 10 <= h <= 32 and 2 <= w <= 26 and area >= 18:
+                chars.append((int(x), int(y), int(w), int(h)))
+        chars.sort()
+        # 相邻字符（间隙 ≤10px、基线差 ≤8px）合成一个数字串
+        runs, cur = [], None
+        for x, y, w, h in chars:
+            if cur and x - (cur[0] + cur[2]) <= 10 and abs(y - cur[1]) <= 8:
+                cur = [cur[0], min(cur[1], y), x + w - cur[0], max(cur[3], y + h - cur[1])]
+            else:
+                if cur:
+                    runs.append(cur)
+                cur = [x, y, w, h]
+        if cur:
+            runs.append(cur)
+        # 「N/30」是 4~5 个字符，宽 40~110：更窄的是 1288 这种纯数字，更宽的是并进了
+        # 相邻资源。x>400 用来甩掉左侧加成灯笼 —— 实测突破券从没低于 x=500。
+        return [(x, y + y0, w, h) for x, y, w, h in runs if 40 <= w <= 110 and x > 400]
+
+    def _raid_ticket_sample(self, page, force: bool = False) -> tuple | None:
+        """读突破券 (current, total)，读不到或读数不合理返回 None。
+
+        每次都先做像素检测（3~5ms，很便宜），再拿上一次锁定的框和这次检测到的框比对：
+        对得上就只 OCR 这一个（正常情况一次 OCR），对不上说明布局变了，全扫重认。
+        **不能直接复用旧框**：布局小幅平移时旧框可能正好裁掉首位数字，读出一个
+        「像模像样但是错的」值（30/30 被裁成 0/30），比读不出来更危险。
+        OCR 单次约 370ms，所以 2 秒内的重复调用直接复用上次读数，别每帧都读。
+        """
+        now = time.time()
+        cache = getattr(self, '_raid_ticket_cache', None)
+        if not force and cache and now - cache[0] < self.RAID_TICKET_INTERVAL:
+            return cache[1]
+
+        box = getattr(self, '_raid_ticket_box', None)
+        # 上一轮刚全扫过、什么都没找到：冷却一段时间再来，别每次调用都烧 1.5 秒 OCR
+        fail_ts = getattr(self, '_raid_ticket_fail_ts', 0.0)
+        if not force and box is None and now - fail_ts < self.RAID_TICKET_RESCAN_CD:
+            self._raid_ticket_cache = (now, None)
+            return None
+
+        runs = self._raid_ticket_runs()
+        # 上次锁定的框如果这次还在同一位置，优先读它（省掉其余候选的 OCR）
+        ordered = [r for r in runs if self._raid_box_same(box, r)] + \
+                  [r for r in runs if not self._raid_box_same(box, r)]
+        value = None
+        for run in ordered:
+            value = self._raid_ticket_read(run)
+            if value is None:
+                continue
+            if not self._raid_box_same(box, run):
+                logger.info(
+                    f'RealmRaid: 突破券位置 {box} -> {run}'
+                    f'（顶栏候选 {len(runs)} 个），读数 {value[0]}/{value[1]}'
+                )
+            self._raid_ticket_box = run
+            self._raid_ticket_fail_ts = 0.0
+            break
+        if value is None:
+            self._raid_ticket_box = None
+            self._raid_ticket_fail_ts = now
+            logger.warning(
+                f'RealmRaid: {getattr(page, "name", page)} 顶栏没找到突破券读数'
+                f'（候选 {len(runs)} 个），{self.RAID_TICKET_RESCAN_CD:.0f} 秒内不再重扫'
+            )
+        self._raid_ticket_cache = (now, value)
+        return value
+
+    @staticmethod
+    def _raid_box_same(a, b, tol: int = 6) -> bool:
+        """两个文字行框是否是同一处（布局没变）。留 6px 容差给渲染抖动"""
+        if not a or not b:
+            return False
+        return all(abs(int(x) - int(y)) <= tol for x, y in zip(a, b))
+
+    def _raid_ticket_log(self, page, cu: int, total: int, threshold) -> None:
+        """读数变化才落日志：check_exit 每帧都会检票，不变就刷屏"""
+        if self._raid_ticket_last == (cu, total):
             return
-        if current_page == pages.page_exp_entrance:
-            cu, res, total = self.O_REALM_RAID_NUMBER1.ocr(self.device.image)
-        else:
-            cu, res, total = self.O_REALM_RAID_NUMBER.ocr(self.device.image)
-        # 判断突破票数量
-        if cu < con_scrolls.scrolls_threshold:
-            return
+        self._raid_ticket_last = (cu, total)
+        logger.info(
+            f'RealmRaid: {getattr(page, "name", page)} 突破券 {cu}/{total}，阈值 {threshold}'
+        )
+
+    def _rotation_goto_realm_raid(self, con, con_scrolls, cu: int, total: int, source: str) -> None:
+        """队长票够：关加成 → 广播暂停 → 排突破/绘卷 → 结束本次探索。
+
+        只有队长会走到这里，小号在入口就被挡掉。`source` 只进日志，用来区分是探索
+        途中检到的票，还是「退出组队」那一刻检到的。
+        """
         # 关闭加成
         if con.buff_gold_50_click or con.buff_gold_100_click or con.buff_exp_50_click or con.buff_exp_100_click:
             self.goto_page(pages.page_main)
@@ -499,33 +644,114 @@ class BaseExploration(GameUi, GeneralBattle, GeneralRoom, GeneralInvite, Replace
             self.exp_50(is_open=False)
             self.exp_100(is_open=False)
             self.close_buff()
+        logger.info(
+            f'RealmRaid: {source} 突破券 {cu}/{total} 已达阈值 {con_scrolls.scrolls_threshold}，'
+            f'队长转去打突破'
+        )
         # 设置下次执行行时间
         logger.info("RealmRaid and Exploration  set_next_run !")
         next_run = datetime.now() + con_scrolls.scrolls_cd
         # 打突破回来属于同一轮内的自动重排，把「上次开局时间」预支到回来那一刻，
         # 免得队长打完突破重跑探索时又白等一次开局等待。
-        if self.rotation_enabled():
-            # 这下面几次写盘之后就 raise TaskEnd，post_process 不会执行，
-            # 所以累计场数必须在这里落盘，否则最后这几场会丢
-            self.rotation_sync_played()
-            rot = self._rotation_cfg
-            rot.last_open_time = next_run.replace(microsecond=0).isoformat()
-            if self.rotation_is_leader():
-                # 广播给小号：这段时间别占着队伍，退队回庭院等邀请
-                rot.paused_until = next_run.replace(microsecond=0).isoformat()
-                logger.info(
-                    f'Rotation: 队长去打突破，{next_run.strftime("%H:%M:%S")} 前暂停邀请，'
-                    f'当前小号 {rot.current_member or "(未锚定)"} 将退队待命'
-                )
-            else:
-                rot.paused_until = ''
-            self.config.save()
-            logger.info('Rotation: 打突破期间不算新开局，回来不做开局等待')
+        # 这下面几次写盘之后就 raise TaskEnd，post_process 不会执行，
+        # 所以累计场数必须在这里落盘，否则最后这几场会丢
+        self.rotation_sync_played()
+        rot = self._rotation_cfg
+        rot.last_open_time = next_run.replace(microsecond=0).isoformat()
+        # 广播给小号：这段时间别占着队伍，退队回庭院等邀请
+        rot.paused_until = next_run.replace(microsecond=0).isoformat()
+        logger.info(
+            f'Rotation: 队长去打突破，{next_run.strftime("%H:%M:%S")} 前暂停邀请，'
+            f'当前小号 {rot.current_member or "(未锚定)"} 将退队待命'
+        )
+        self.config.save()
+        logger.info('Rotation: 打突破期间不算新开局，回来不做开局等待')
         self.goto_page(pages.page_exploration)
         self.set_next_run(task='Exploration', success=False, finish=False, target=next_run)
         self.set_next_run(task='RealmRaid', success=False, finish=False, server=False, target=datetime.now())
         self.set_next_run(task='MemoryScrolls', success=False, finish=False, target=datetime.now())
         raise TaskEnd
+
+    def activate_realm_raid(self, con_scrolls, con, current_page: pages.Page | None) -> None:
+        # 判断是否开启突破票检测。白名单只挑「顶栏看得见突破券、且不是马上就要去打突破」
+        # 的页面：结界突破页本身排除在外，否则会在突破页上再触发一次转场，来回空转。
+        if not con_scrolls.scrolls_enable or current_page is None or \
+                current_page not in (pages.page_exploration, pages.page_exp_entrance, pages.page_main):
+            return
+        # 只服务组队轮换：单刷（huijuan1~4 / 配置4）是 scrolls_enable=True 但 rotation=False，
+        # 没有这道门的话，取样框修好后单刷也会在探索界面被拎去打突破。
+        if not self.rotation_enabled():
+            return
+        sample = self._raid_ticket_sample(current_page)
+        if sample is None:
+            return
+        cu, total = sample
+        self._raid_ticket_log(current_page, cu, total, con_scrolls.scrolls_threshold)
+        # 小号票满了也不去打突破：它一走就没人等队长邀请了，整轮直接断。
+        # 同一读数只提醒一次，别每帧刷屏。
+        if not self.rotation_is_leader():
+            if cu >= con_scrolls.scrolls_threshold and self._raid_member_skip != (cu, total):
+                self._raid_member_skip = (cu, total)
+                logger.info(
+                    f'RealmRaid: 小号 {getattr(current_page, "name", current_page)} 突破券 '
+                    f'{cu}/{total} 已达阈值，按分工不去打，继续等队长邀请'
+                )
+            return
+        # 判断突破票数量
+        if cu < con_scrolls.scrolls_threshold:
+            return
+        self._rotation_goto_realm_raid(
+            con, con_scrolls, cu, total, getattr(current_page, 'name', current_page)
+        )
+
+    def rotation_raid_on_leave(self) -> None:
+        """退出组队那一刻再检一次突破券：队长票够直接去打突破，小号只回庭院等邀请。
+
+        为什么盯这个时机：一整轮里只有「退出队伍」这几秒既不在战斗、又必然看得见顶栏
+        突破券。`check_exit` 的检票要求画面正好停在探索页或章节详情页，而队长实际很少
+        经过 —— douji1 实测一天只过 7 次章节页，探索页几乎不停（1019 次都在副本内的
+        page_exp_main，那张图上压根没有突破券）。所以以前券满了也要拖到某个小号打满配额、
+        退队时才可能被发现，甚至整轮都发现不了。
+
+        落脚点通常是庭院（`rotation_leave_team` 的终点），突破券在顶栏第 3 项；但顶栏
+        项序和宽度会随「挑战」等项的数值变化整体平移，所以位置由 `_raid_ticket_runs`
+        现找现认，不按页面写死。
+        """
+        if not self.rotation_enabled():
+            return
+        # 读 `self._config` 而不是 self.config.model：这两处都是只读快照，
+        # 下面 set_next_run 重建 model 之后不能再往 _config 上写（写了会丢）
+        con_scrolls = self._config.scrolls
+        con = self._config.exploration_config
+        if not con_scrolls.scrolls_enable:
+            logger.info('RealmRaid: 未开启突破券检测，退出组队后不检票')
+            return
+        self.screenshot()
+        page = self.get_current_page()
+        # force：这一刻的读数必须是当前画面的真值，不能吃探索途中缓存的那份
+        sample = self._raid_ticket_sample(page, force=True)
+        if sample is None:
+            logger.warning(
+                f'RealmRaid: 退队后停在 {getattr(page, "name", page)}，读不到突破券，本次不检票'
+            )
+            return
+        cu, total = sample
+        threshold = con_scrolls.scrolls_threshold
+        # 小号：票再多也不去打，回庭院等队长邀请就够了（用户 11-11 定的分工）
+        if not self.rotation_is_leader():
+            logger.info(
+                f'RealmRaid: 小号退队后突破券 {cu}/{total}（阈值 {threshold}），'
+                f'按分工不去打，回庭院等待队长组队'
+            )
+            return
+        if cu < threshold:
+            logger.info(
+                f'RealmRaid: 队长退队后突破券 {cu}/{total}，未达阈值 {threshold}，继续换小号'
+            )
+            return
+        self._rotation_goto_realm_raid(
+            con, con_scrolls, cu, total, f'退队后 {getattr(page, "name", page)} 检票'
+        )
 
     # ------------------------------------------------------------------
     # 小号轮换（1 对多）：队长固定不切号，小号位按名单轮流上
