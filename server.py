@@ -26,6 +26,13 @@ else:
         
 import threading
 
+from deploy.no_window import install_no_window_patch
+
+# oasx.exe（Flutter GUI）用 toolkit/pythonw.exe 拉起本进程，没有控制台；
+# 给所有 subprocess 补 CREATE_NO_WINDOW，否则 adb / tasklist 会弹黑窗。
+# 有控制台时（console.bat 手动调试）该函数自动跳过。详见 deploy/no_window.py
+install_no_window_patch()
+
 from module.logger import logger
 from module.image.rpc import ensure_image_server_ready, shutdown_image_server
 from module.server.setting import State
