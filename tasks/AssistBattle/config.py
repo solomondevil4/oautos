@@ -144,7 +144,7 @@ class AssistBattleDailyConfig(BaseModel):
     mystery_shop_enable: bool = Field(
         default=False,
         title='启用神秘商店',
-        description='调用「神秘商店」任务本体：买什么、价格上限、整只达摩推送，'
+        description='调用「神秘商店」任务本体：买什么、价格上限、达摩推送（整只 / 2 片 / 3 片黑碎），'
         '全部在【神秘商店】任务里配置，这里不用再设一遍。\n'
         '只在周三 / 周六（商店开放日）执行。商店 00:00 刷新、当天 24:00 结束，'
         '整天都能买，所以**不受**「部分日常功能仅晚上执行」那个时段限制 —— '

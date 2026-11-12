@@ -107,6 +107,27 @@ class ScriptTask(
         platform = '安卓' if result['apple_or_android'] else '苹果'
         return f'{account}-{platform}-{svr:　>4}-{character}'
 
+    def _push_account_label(self, account) -> str:
+        """神秘商店推送用的账号标识：角色名（账号前 4 位）。
+
+        神秘商店任务自己不知道当前跑的是哪个号（它是被 run_mystery_shop 临时创建出来的），
+        推送正文要在创建后由这里注入。
+
+        脱敏和 format_account_name 共用同一个开关 push_config.full_name_enable：
+        打开时角色名、账号都原样显示；关闭时角色名只留后 2 字、账号只留前 4 位。
+        只取这两样，不拼平台和服务器 —— 商店推送只需要「哪个号」。
+        """
+        if account is None:
+            return ''
+        character = getattr(account, 'character', '') or ''
+        name = getattr(account, 'account', '') or ''
+        if not self.conf.push_config.full_name_enable:
+            character = f'…{character[-2:]}' if character else ''
+            name = f'{name[:4]}…' if len(name) > 4 else name
+        if character and name:
+            return f'{character}（{name}）'
+        return character or name
+
     def is_assist_count_normal(self, result) -> bool:
         """协战次数是否正常: 觉醒打满 15 次、结界突破打满 3 次
 
@@ -824,6 +845,8 @@ class ScriptTask(
         logger.hr('Run MysteryShop for current account', 3)
         try:
             task = MysteryShopScriptTask(self.config, self.device)
+            # 商店任务自己不知道当前账号，把账号标签注入进去，推送正文才能标出是哪个小号。
+            task.account_label = self._push_account_label(self._current_account)
             done = task.run_shop_body()
         except RequestHumanTakeover:
             # 需要人工介入的一律往上抛，和 run_own_wanted_quests 的处理保持一致

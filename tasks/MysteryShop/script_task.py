@@ -235,17 +235,24 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # OCR 自带的 filter() 会退化成逐字匹配，光靠它会把货架上的「御行达摩」判成这个弹窗。
     LIMIT_WARN_KEYWORD = '已达上限'
 
-    # ---------- 整只御行达摩推送 ----------
-    # 只推整只（_cell_is_scrap 判成非碎片的那一格），碎片不推：碎片几乎每店都有，
-    # 推出来就是噪声；整只一周未必刷出一次，用户要第一时间知道。
+    # ---------- 达摩推送 ----------
+    # 整只：一周未必刷出一次，用户要第一时间知道（好决定要不要手动上线临时抢，或者调上限）。
+    # 碎片：几乎每店都有，所以不推「有就推」，只按片数拆成 2 片 / 3 片两项开关
+    #       （配置里在「整只推送」上面，用户 11-12 明确要两个独立可选项）。
     # 推送走全局推送通道（self.config.notifier，和一键协战 / 报错推送同一套），
     # 所以「设置 - 推送」没配好时 push() 自己返回 False，这里只记一行日志。
     PUSH_TITLE = '神秘商店：发现整只御行达摩'
-    # 去重键 = (店面标签, 列号, 价格)。滚动前后两屏有重叠，同一格会被 _scan_screen
-    # 识别两次；列号不随滚动变（四列中心线固定），价格又能把同列的两只分开，
-    # 两者一起才能既不重复推送、又不漏掉同一家店的第二只。
+    # 碎片标题带片数，手机上一眼能分清是 2 片还是 3 片。
+    SCRAP_PUSH_TITLE = '神秘商店：发现 {qty} 片御行达摩碎片'
+    # 去重键 = (种类, 账号/店面, 列号, 价格[, 片数])。滚动前后两屏有重叠，同一格会被
+    # _scan_screen 识别两次；列号不随滚动变（四列中心线固定），价格又能把同列的两只分开。
+    # 整只与碎片共用这个集合，所以键必须带种类前缀，否则同列同价的整只和碎片会互相顶掉。
     # 类级默认值给「没走 run() 的入口」兜底，读它不会 AttributeError。
     daruma_push_seen = frozenset()
+    # 推送正文开头的「这是哪个号」。神秘商店任务自己不知道当前账号（它是被一键协战
+    # 临时创建出来跑的），由 AssistBattle.run_mystery_shop 在创建后注入；
+    # 单独运行本任务时为空串，正文退回店面标签（自己的店 / 好友店）。
+    account_label = ''
     # 当前扫的是哪一批货 / 哪一家店，只用于推送正文和去重。
     shop_tag = '自己的店'
 
@@ -2143,6 +2150,15 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             return 'soul'
         return 'jade'
 
+    def _push_tag(self) -> str:
+        """
+        推送正文开头的「这是哪个号」。
+
+        一键协战跑商店时由调用方注入 account_label（角色名 + 账号前 4 位），用户要的就是
+        「这条消息是哪个小号发出来的」；单独运行本任务时注入不了，退回店面标签。
+        """
+        return self.account_label or self.shop_tag
+
     def _notify_daruma_found(self, image, ax: int, price: int, cfg) -> None:
         """
         识别到整只御行达摩就推一条消息（走全局推送通道，和一键协战 / 报错推送同一套）。
@@ -2161,8 +2177,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         if not cfg.black_daruma_push_enable:
             return
-        tag = self.shop_tag
-        key = (tag, self._col_key(ax + 20), int(price))
+        tag = self._push_tag()
+        key = ('整只', tag, self._col_key(ax + 20), int(price))
         if key in self.daruma_push_seen:
             logger.info(f'MysteryShop: 整只御行达摩（{tag} {price} 勾玉）这一趟已经推送过，跳过')
             return
@@ -2185,6 +2201,47 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                                '检查「设置 - 推送」是否已启用并配好渠道')
         except Exception as e:
             logger.warning(f'MysteryShop: 整只御行达摩推送异常，忽略：{e!r}')
+
+    def _notify_scrap_found(self, ax: int, price: int, qty: int, unit: float, cfg) -> None:
+        """
+        识别到 2 片 / 3 片御行达摩碎片时推一条消息（配置里两项开关各管一个片数）。
+
+        **与买不买完全解耦**：没勾「御行达摩碎片」购买、单价高于上限、勾玉不够，
+        只要识别到就推 —— 用户要的是「这个号店里有几片黑碎」这个情报，
+        好决定要不要上线去用（他的场景是拿小号分享，不指望脚本自动买）。
+
+        只推 2 片 / 3 片：1 片几乎每店都有，推出来是噪声，配置里也不给这个选项。
+        正文按用户要求只给账号 + 道具名 + 价格，不带截图。
+
+        去重：同一次运行里 (种类, 账号, 列号, 价格, 片数) 相同只推一次。扫描是逐屏做的，
+        滚动前后两屏有重叠，同一格必然被识别两次；带片数是因为同一列可能同时有 2 片和
+        3 片两个格子，不能只看价格。
+        """
+        if qty == 2:
+            if not cfg.black_daruma_scrap_push_2:
+                return
+        elif qty == 3:
+            if not cfg.black_daruma_scrap_push_3:
+                return
+        else:
+            return
+        tag = self._push_tag()
+        key = ('碎片', tag, self._col_key(ax + 20), int(price), int(qty))
+        if key in self.daruma_push_seen:
+            logger.info(f'MysteryShop: {qty} 片黑碎（{tag} {price} 勾玉）这一趟已经推送过，跳过')
+            return
+        self.daruma_push_seen = set(self.daruma_push_seen) | {key}
+
+        content = (f'账号：{tag}\n'
+                   f'御行达摩碎片 {qty} 片，{price} 勾玉（{unit:.1f} 一片）')
+        logger.info(f'MysteryShop: 推送 {qty} 片黑碎（{tag} {price} 勾玉，单价 {unit:.1f}）')
+        try:
+            if not self.config.notifier.push(title=self.SCRAP_PUSH_TITLE.format(qty=qty),
+                                            content=content):
+                logger.warning('MysteryShop: 黑碎推送失败，'
+                               '检查「设置 - 推送」是否已启用并配好渠道')
+        except Exception as e:
+            logger.warning(f'MysteryShop: 黑碎推送异常，忽略：{e!r}')
 
     def _scan_screen(self, cfg, notify: bool = True) -> list:
         """
@@ -2247,6 +2304,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 # 宁可少推一次也不推错。碎片在上面就被分走了，不会走到这里。
                 if notify:
                     self._notify_daruma_found(image, ax, price, cfg)
+            elif notify:
+                # 碎片只推 2 片 / 3 片，片数与开关都在 _notify_scrap_found 里判。
+                # 放在这里（不是 items 循环之后）是为了拿到本格的 qty 和单价。
+                self._notify_scrap_found(ax, price, qty, unit, cfg)
             items.append({'kind': kind, 'price': price, 'qty': qty, 'unit': unit,
                           'ax': ax, 'ay': ay, 'tmpl_h': self.HEISUI_H,
                           'click': self.HEISUI_CLICK,
