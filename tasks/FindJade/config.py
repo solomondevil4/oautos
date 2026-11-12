@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from typing import Any, Dict
 
 from pydantic import Field, BaseModel, ConfigDict, model_validator, model_serializer, ValidationError
@@ -7,6 +7,9 @@ from tasks.Component.SwitchAccount.switch_account_config import AccountInfo
 from tasks.Component.config_base import ConfigBase, DateTime, Time, dynamic_hide
 from tasks.Component.config_scheduler import Scheduler
 from tasks.WantedQuests.config import CooperationSelectMaskDescription, CooperationSelectMask, CooperationType
+
+# 悬赏封印的游戏刷新点, 与脚本实际运行时刻(run_time_1/2)无关
+JADE_REFRESH_HOURS = (5, 18)
 
 
 class InviteHistoryItem(BaseModel):
@@ -104,7 +107,25 @@ class FindJadeConfig(ConfigBase):
     # 本时段(5点/18点刷新)已推送过的结果快照, 用来保证「一个时间段算一趟」:
     # 同一时段重启多次, 内容没变就不重发; 查出新勾协才补发一份完整清单。
     jade_push_state: str = Field(default='', description='脚本自动维护的推送快照')
-    hide_fields = dynamic_hide('jade_push_state')
+    # ---------- 普通勾协邀请上限 ----------
+    # 大号能挂的协作数量有限, 名单里的大号本时段都接过普勾之后, 后面的小号再邀请
+    # 只会撞上「名单里所有好友本时段都已接过」, 每个格子白重试 5 次 × 5 秒。
+    # 累计邀请成功的「普通勾协」达到这个数就直接结束本次任务。
+    # 只数普勾: 现世勾协(同样是 Jade 类型, 靠现世标记区分)和粮协都不计数。
+    normal_jade_limit: int = Field(
+        default=-1,
+        ge=-1,
+        title='普通勾协邀请到 N 个就停止本次任务',
+        description='只数「普通勾协」，现世勾协和粮协都不计数。\n'
+                    '-1 = 自动：等于邀请名单里的大号数量（每个大号各 1 个）\n'
+                    '0 = 不限制（老行为，一直切完所有小号）\n'
+                    '正整数 = 指定的总数量\n'
+                    '按游戏 5:00 / 18:00 刷新时段累计，同一时段重启不会重复计数。',
+    )
+    # 本时段已邀请成功的普通勾协数 + 计数所属时段(如 2026-11-12-PM), 跨时段自动归零
+    normal_jade_invited: int = Field(default=0, description='脚本自动维护的普通勾协计数')
+    normal_jade_cycle: str = Field(default='', description='脚本自动维护的计数时段')
+    hide_fields = dynamic_hide('jade_push_state', 'normal_jade_invited', 'normal_jade_cycle')
 
 
 class FindJade(ConfigBase):
@@ -114,6 +135,55 @@ class FindJade(ConfigBase):
     invite_info_list: list[InviteInfo] = None
     # 小号信息
     sup_account_list: list[FindJadeAccountInfo] = None
+
+    # ---------- 普通勾协邀请额度 ----------
+    # 时段判定与 script_task 的推送快照共用一套, 只在这里实现一份。
+
+    @staticmethod
+    def jade_refresh_point(now: datetime) -> datetime:
+        """悬赏封印最近一次刷新时刻(每天 5 点 / 18 点)"""
+        points = [datetime.combine(now.date(), time(h, 0)) for h in JADE_REFRESH_HOURS]
+        passed = [p for p in points if p <= now]
+        if passed:
+            return max(passed)
+        return datetime.combine(now.date() - timedelta(days=1), time(18, 0))
+
+    @classmethod
+    def jade_cycle_key(cls, now: datetime) -> str:
+        """一个时间段算一趟: 05:00-18:00 记 AM, 18:00-次日05:00 记 PM"""
+        refresh = cls.jade_refresh_point(now)
+        return f'{refresh:%Y-%m-%d}-{"AM" if refresh.hour == 5 else "PM"}'
+
+    def normal_jade_limit_effective(self) -> int:
+        """实际生效的普勾上限: -1 = 名单里有效的大号数量, 0 = 不限制"""
+        conf = self.find_jade_config
+        if conf.normal_jade_limit > 0:
+            return conf.normal_jade_limit
+        if conf.normal_jade_limit == 0:
+            return 0
+        return len([i for i in (self.invite_info_list or []) if i.is_valid()])
+
+    def normal_jade_remain(self, now: datetime = None) -> int:
+        """本时段还能邀请几个普通勾协; -1 = 不限制, 0 = 已达上限"""
+        limit = self.normal_jade_limit_effective()
+        if limit <= 0:
+            return -1
+        conf = self.find_jade_config
+        if conf.normal_jade_cycle != self.jade_cycle_key(now or datetime.now()):
+            # 换时段了, 老计数作废
+            return limit
+        return max(0, limit - conf.normal_jade_invited)
+
+    def note_normal_jade_invited(self, now: datetime = None) -> int:
+        """记一次「普通勾协邀请成功」, 返回记完后的剩余额度(-1 = 不限制)"""
+        conf = self.find_jade_config
+        now = now or datetime.now()
+        cycle = self.jade_cycle_key(now)
+        if conf.normal_jade_cycle != cycle:
+            conf.normal_jade_cycle = cycle
+            conf.normal_jade_invited = 0
+        conf.normal_jade_invited += 1
+        return self.normal_jade_remain(now)
 
     def get_invite_name(self, ctype: CooperationType, present_world: bool = False):
         for info in self.invite_info_list:

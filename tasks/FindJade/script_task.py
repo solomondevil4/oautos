@@ -1,5 +1,5 @@
 import importlib
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from time import sleep
 
 from module.base.timer import Timer
@@ -24,8 +24,8 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
     FIND_JADE_UNKNOWN = "未知"
     # 只有这几种算「有勾」, 需要出现在推送里
     JADE_HAS = (FIND_JADE_NORMAL, FIND_JADE_SPECIAL, FIND_JADE_BOTH)
-    # 悬赏封印的游戏刷新点, 与脚本实际运行时刻(run_time_1/2)无关
-    JADE_REFRESH_HOURS = (5, 18)
+    # 悬赏封印的游戏刷新点, 与脚本实际运行时刻(run_time_1/2)无关。
+    # 数值已移到 config.JADE_REFRESH_HOURS, 邀请额度与推送快照共用一份。
 
     def run(self):
         self.fade_conf = self.config.model.find_jade
@@ -35,6 +35,9 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
 
         try:
             for accountInfo in self.fade_conf.sup_account_list:
+                # 名单里的大号本时段都接过普勾了, 后面小号再邀请只会白等「好友不在线」重试
+                if self.jade_quota_reached():
+                    break
                 logger.info("start %s-%s ", accountInfo.character, accountInfo.svr)
                 if not self.is_need_login(accountInfo):
                     logger.warning("%s Skipped last Login Time:%s", accountInfo.character, accountInfo.last_complete_time)
@@ -81,6 +84,24 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
                 logger.error('push_result failed: %s', e)
         self.next_run("FindJade", success=True)
         raise TaskEnd("FindJade")
+
+    def jade_quota_reached(self) -> bool:
+        """本时段的普通勾协额度是不是已经用完
+
+        额度按游戏 5:00 / 18:00 刷新时段累计(不是每次运行清零), 所以同一时段重启
+        不会重新给一遍额度。normal_jade_limit = -1 时额度等于名单里的大号数量,
+        0 表示不限制。
+        """
+        conf = self.current_conf()
+        remain = conf.normal_jade_remain()
+        if remain != 0:
+            return False
+        logger.info(
+            '本时段普通勾协已邀请 %s 个，达到上限 %s，不再处理剩余小号',
+            conf.find_jade_config.normal_jade_invited,
+            conf.normal_jade_limit_effective(),
+        )
+        return True
 
     def detect_jade(self) -> str:
         """切号后看悬赏封印有没有勾协, 返回 无勾/普勾/现勾/普勾+现勾/未知"""
@@ -250,18 +271,16 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
 
     @staticmethod
     def jade_refresh_point(now: datetime) -> datetime:
-        """悬赏封印最近一次刷新时刻(每天 5 点 / 18 点)"""
-        points = [datetime.combine(now.date(), time(h, 0)) for h in ScriptTask.JADE_REFRESH_HOURS]
-        passed = [p for p in points if p <= now]
-        if passed:
-            return max(passed)
-        return datetime.combine(now.date() - timedelta(days=1), time(18, 0))
+        """悬赏封印最近一次刷新时刻(每天 5 点 / 18 点)
+
+        实现在 config.FindJade, 与普勾邀请额度共用一份, 避免两处各算一套。
+        """
+        return FindJade.jade_refresh_point(now)
 
     @staticmethod
     def jade_cycle_key(now: datetime) -> str:
         """一个时间段算一趟: 05:00-18:00 记 AM, 18:00-次日05:00 记 PM"""
-        refresh = ScriptTask.jade_refresh_point(now)
-        return f'{refresh:%Y-%m-%d}-{"AM" if refresh.hour == 5 else "PM"}'
+        return FindJade.jade_cycle_key(now)
 
     @staticmethod
     def account_key(accountInfo) -> str:
@@ -373,6 +392,8 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
             "get_invite_vip_name": WantedQuestsEx.get_invite_vip_name,
             "next_run": WantedQuestsEx.next_run,
             "invite_success_callback": WantedQuestsEx.invite_success_callback,
+            # 普勾额度: 邀请到上限就停手, 不再邀请剩余格子
+            "all_cooperation_invite": WantedQuestsEx.all_cooperation_invite,
             "get_config": WantedQuestsEx.get_config
         })
         # 让覆写的 get_cooperation_info 能调到上游原实现(只补标记, 不复制逻辑)

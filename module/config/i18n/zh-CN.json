@@ -4,6 +4,8 @@
   "kekkai_utilize_sleep_start_help": "结界蹭卡专用的休眠开始时刻。进入该时段后不再运行蹭卡，到结束时刻自动恢复。支持跨午夜（如 23:00 到次日 06:00）。此设置与本任务的独立作息，不受全局「防风控作息」开关影响。开始与结束设成同一时刻表示不限制。",
   "kekkai_utilize_sleep_end_help": "退出休眠时段、恢复运行结界蹭卡的时刻。",
   "push_result_enable": "推送勾协结果",
+  "normal_jade_limit": "普通勾协邀请到 N 个就停止本次任务",
+  "Normal Jade Limit": "普通勾协邀请到 N 个就停止本次任务",
   "consignment_shikigami_enable": "启用寄售屋购买指定联动碎片",
   "consignment_shikigami_day": "联动碎片运行星期",
   "consignment_shikigami_name": "要购买的联动式神",
