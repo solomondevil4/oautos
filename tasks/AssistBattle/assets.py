@@ -50,7 +50,7 @@ class AssistBattleAssets:
 	# 存在奖励标志 
 	I_REWARD_EXIST = RuleImage(roi_front=(193,441,16,15), roi_back=(185,363,28,312), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_reward_exist.png")
 	# 领取奖励 
-	I_REWARD_BOX = RuleImage(roi_front=(296,450,68,69), roi_back=(260,342,144,257), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_reward_box.png")
+	I_REWARD_BOX = RuleImage(roi_front=(296,450,68,69), roi_back=(260,338,973,261), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_reward_box.png")
 	# 召唤动画结束 
 	I_SUMMON_OVER = RuleImage(roi_front=(1187,635,55,40), roi_back=(1164,613,101,91), threshold=0.8, method="Template matching", file="./tasks/AssistBattle/ab/ab_summon_over.png")
 	# 签到活动界面标志 
