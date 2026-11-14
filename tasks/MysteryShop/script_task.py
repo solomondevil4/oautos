@@ -239,13 +239,16 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 整只：一周未必刷出一次，用户要第一时间知道（好决定要不要手动上线临时抢，或者调上限）。
     # 碎片：几乎每店都有，所以不推「有就推」，只按片数拆成 2 片 / 3 片两项开关
     #       （配置里在「整只推送」上面，用户 11-12 明确要两个独立可选项）。
+    # **推送时机（11-14 用户改）**：不再「发现一件发一封」，一律攒到跑完再发一封。
+    #   - 被一键协战调用：写进调用方的收集器，并进那一封「多号任务完成」；
+    #   - 单独运行本任务：攒在本趟的 _local_findings 里，run() 收尾发这一封。
     # 推送走全局推送通道（self.config.notifier，和一键协战 / 报错推送同一套），
     # 所以「设置 - 推送」没配好时 push() 自己返回 False，这里只记一行日志。
-    PUSH_TITLE = '神秘商店：发现整只御行达摩'
-    # 碎片标题带片数，手机上一眼能分清是 2 片还是 3 片。
-    SCRAP_PUSH_TITLE = '神秘商店：发现 {qty} 片御行达摩碎片'
-    # 去重键 = (种类, 账号/店面, 列号, 价格[, 片数])。滚动前后两屏有重叠，同一格会被
+    PUSH_TITLE = '神秘商店：达摩发现'
+    # 去重键 = (种类, 账号标签, 店面, 列号, 价格[, 片数])。滚动前后两屏有重叠，同一格会被
     # _scan_screen 识别两次；列号不随滚动变（四列中心线固定），价格又能把同列的两只分开。
+    # 账号与店面都要带：一键协战调用时账号标签是恒定不变的角色名，只有店面能区分 5 家店，
+    # 少了它会把不同店的同列同价货当成重复（11-14 修）。
     # 整只与碎片共用这个集合，所以键必须带种类前缀，否则同列同价的整只和碎片会互相顶掉。
     # 类级默认值给「没走 run() 的入口」兜底，读它不会 AttributeError。
     daruma_push_seen = frozenset()
@@ -255,6 +258,15 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     account_label = ''
     # 当前扫的是哪一批货 / 哪一家店，只用于推送正文和去重。
     shop_tag = '自己的店'
+    # 「把发现交给调用方汇总」的出口，默认 None = 本任务自己攒、跑完发一封。
+    # 一键协战调用 run_shop_body 前会把它设成一个 list，本任务改成往 list 里塞记录，
+    # 由调用方在整轮跑完后用一封「多号任务完成」发出去 —— 用户 11-14 要求：
+    # 2/3 片黑碎和整只达摩不要再「发现一次就发一封邮件」，20 个号一轮几十封受不了。
+    # 只影响推送时机，识别、去重、买不买的判断一律不变。
+    push_sink = None
+    # 单独运行时本趟自己攒的发现，run_shop_body 每趟清空、run() 收尾统一发一封。
+    # 类级默认 None 兜底：_notify_* 理论上只在 run_shop_body 之后被调用，这里防一手。
+    _local_findings = None
 
     # 神秘商人等级上限。不再做成 GUI 配置项：这一项的唯一目的就是把商人顶到 5 级
     # （5 级才刷得出高价值道具），用户要求固定 5，省掉一行输入框。
@@ -371,21 +383,54 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 最多记录多少家店。好友商店一屏一家、切一次 3~5 秒，30 家已经远超实际数量，
     # 纯粹是防「next_one 一直返回 True」的死循环。
     COMPARE_MAX_SHOPS = 30
-    # 切店成功的判据：画面平均像素差。和 _scroll_down_one_page 用同一把尺
-    # （实测 16416 切店前后差 20 以上，点不动时差 0.x）。
-    # **取 10.0 不是 5.0**：11-04 douji1 回程退店，3 次里第一次只差 7.9 就判「切换成功」，
-    # 实际那一下没切（应当是切店动画的中间帧），于是「以为退了 3 家、只退了 2 家」，
-    # 在错误的店里翻两屏找 48 的黑碎，白跑一趟。healthy 切换实测 11.9 / 13.6 / 13.7 / 21.5，
-    # 7.9 是唯一的离群值，10.0 正好把它挡在外面。
-    SHOP_SWITCH_DIFF = 10.0
-    # 差值达标还不够：切店动画中途也能冲到 10 以上。达标后再等 0.4 秒比一次，
-    # 画面静止（相邻两次截图差 < 这个值）才算真的切完了。
+    # 切店成功的判据：**点击前后整图的平均像素差** —— 不再看 OCR 好友名。
+    # 11-14 用户指出：一个好友可以分享 2 次，同一个名字下面是两家不同的店，
+    # 「名字不变」不能证明没切；反过来名字变了也不能证明只切了一家。
+    # 11-14 21:21~21:33 在 16416 真机实测 9 次切店，把阈值标定下来了：
+    #   真切店（判成功）：3.6 / 3.7 / 3.8 / 7.5 / 10.1 / 10.2 / 10.4 / 11.1 / 11.2
+    #                     / 11.4 / 16.1 / 16.2 / 18.5 / 19.6，静止差一律 0.1~0.3；
+    #   最小 3.6 的那两次正是「同一好友分享两次、货完全一样」的相邻两店。
+    #   噪声（点了没动 / 已经到底 / 已到顶）：0.1 ~ 0.8。
+    # 所以空档是 0.8 ~ 3.6，取 **1.5**：比噪声上界高一倍，离真切店最小值还有 2.4 倍余量。
+    # 旧值 10.0 太钝 —— 下限 3.6 的两次、7.5 那次都会被判「没切」，于是空等 20 秒、
+    # 重试再点一次、多退一家（11-14 20:25 回程买不到 64 就是这条链）。
+    # 万一还有比 3.6 更相似的一对店被判成「点击被吞」，代价是多点一次箭头 ——
+    # 那种索引错位现在由 _goto_shop 的顶屏指纹自愈兜住，不会像以前一样一歪到底。
+    MIN_SWITCH_DIFF = 1.5
+    # 静止判据：相邻两次采样的整图平均差 < 这个值 = 这一下画面不动了。
+    # 为什么不直接比点击前后的差：切店动画的中间帧也能冲到 7.9 以上（11-04 假成功），
+    # 所以必须「先等静止，再比总变化」。
     SHOP_SETTLE_DIFF = 3.0
+    # 连续几次采样判定静止才认（0.5s × 3 ≈ 1.5s）。留这段窗口是为了避开
+    # 「点击生效但动画延迟 1 秒才开始」被误判成「没切」而重复点击。
+    SHOP_SETTLE_TRIES = 3
+    # 采样间隔（秒）
+    SHOP_SWITCH_INTERVAL = 0.5
     SHOP_SWITCH_TRIES = 3
     SHOP_SWITCH_TIMEOUT = 20
+    # 切店失败后「指纹重定位」的上限与判据（11-14 加，解决索引错位不能自愈）。
+    # 索引（cur_idx）是「我退了几家」的记账，和「我现在在哪家」是两件事：只要误判一次
+    # （箭头被吞 / 超时 / 多退一家），记账就永远歪，而左箭头只能往回退、退过头再也回不去。
+    # 补救办法是用内容反查：每家店记录时都留下了「(种类, 片数, 单价) 集合」当指纹，
+    # 重定位时扫一眼顶屏，看识别到的每件货分别属于哪家店的记录，就能认出真实位置。
+    # **只在正常路径失败时调用**，正常回程一次都不扫屏，不增加耗时。
+    SHOP_RESYNC_MAX = 3
+    # 顶屏指纹与某家店第 1 屏指纹的 Jaccard 相似度下限，达到才认作那家店。
+    # 完全相同 = 1.0；少/多一件时 2 件店 0.50、3 件店 0.67，所以取 0.6 只要「几乎一致」。
+    # 认不出就放弃（保守失败），绝不猜——猜错的代价是在错的店里找货、白跑一趟。
+    SHOP_MATCH_RATE = 0.6
+    # 走一家店的过程中「索引被纠正」最多允许几次。指纹判错时靠它止损，
+    # 实测两家店货完全相同时会来回打转，见 _goto_shop 里的 fixes。
+    SHOP_RESYNC_GIVEUP = 3
 
     def run(self):
-        if not self.run_shop_body():
+        try:
+            done = self.run_shop_body()
+        finally:
+            # 跑成没跑成都要发：这一趟扫到的货，下一趟就没了（用户 11-14：整趟汇总一封）。
+            # 被一键协战调用时 push_sink 非 None，发现已在调用方手里，这里什么都不做。
+            self.push_findings_summary()
+        if not done:
             self.next_time(False)
         self.next_time(True)
 
@@ -419,6 +464,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # 本趟买了哪些种类（种类, 片数）：刷新前买过的，后面全店不再比价也不再买。
         # 每趟从干净集合开始，不跨运行残留。
         self.bought_kinds = set()
+        # 本趟每次切店判定的 (结论, 标签, 画面变化, 静止差)，任务末尾汇总成一行标定日志。
+        # 每趟清空：上一趟的分布不能拿来定这一趟的阈值。
+        self._switch_stats = []
         # 勾玉不足标记也每趟重置：上一趟撞到过，不代表这一趟钱不够。
         self.jade_short = False
         # 分享计数与「本店面有没有达标道具」也每趟重置。share_worthy 不是每趟一个，
@@ -432,6 +480,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # 整只御行达摩推送的去重集合与店面标签也每趟重置：跨趟残留会让下一趟
         # 把「上趟已经推过的那只」当成重复，直接不推。
         self.daruma_push_seen = set()
+        # 本趟自己攒的达摩发现（单独运行时用）：每趟清空，run() 收尾合并发一封。
+        self._local_findings = []
         self.shop_tag = '自己的店'
         if con.shop_config.buy_coin_item:
             if self.coin_level > 0:
@@ -615,22 +665,11 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             logger.info('Switch to next friend')
             return True
 
-        present_friend = self.O_MS_FRIEND.ocr(self.device.image)
-        timer = Timer(30).start()
-        while 1:
-            self.screenshot()
-            next_friend = self.O_MS_FRIEND.ocr(self.device.image)
-            if present_friend != next_friend:
-                break
-            if timer.reached():
-                logger.warning('Next button is gone, stop switching friend')
-                return False
-            if self.appear_then_click(self.I_MS_NEXT, interval=2.5):
-                timer.reset()
-                continue
-
-        logger.info('Switch to next friend')
-        return True
+        # 好友的店：用「画面变化」判是否真的切走，**不再比对 O_MS_FRIEND 好友名**。
+        # 旧判据是名字变了才算切成功，可一个好友能分享 2 次 —— 同一名字下是两家店，
+        # 名字没变就被判成「还没切」，于是又点一次右箭头，**把中间那家整个跳过去了**
+        # （11-14 20:24:53~56 从「过山」连点 2 次到「安山」，中间一家没记录）。
+        return self._switch_by_image(self.I_MS_NEXT, '下一家')
 
 
 
@@ -1873,11 +1912,13 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         if not catalogs:
             logger.warning('MysteryShop: [比价] 一家店都没记录到，直接收奖励')
+            self._log_switch_stats()
             return
 
         plan = self._pick_cheapest(catalogs, cfg)
         if not plan:
             logger.info('MysteryShop: [比价] 没有符合价格上限的道具，不回程购买')
+            self._log_switch_stats()
             return
         for shop_idx in sorted(plan.keys(), reverse=True):
             for it in plan[shop_idx]:
@@ -1885,8 +1926,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                             f'在第 {shop_idx} 家，回程买')
         # 当前位置必须是**记过的那家店的序号**，不能拿 catalogs 的个数当序号：
         # 自己店没记录时 catalogs 从 1 开始，个数和序号差 1。
-        bought = self._buy_plan(plan, catalogs[-1][0], cfg)
+        # catalogs 一并传进去：回程自愈（_goto_shop）要用每家店的指纹反查真实位置。
+        bought = self._buy_plan(plan, catalogs[-1][0], catalogs, cfg)
         logger.info(f'MysteryShop: [比价] 回程共买到 {bought} 件')
+        self._log_switch_stats()
 
     def _scan_shop(self, cfg, buy_coin: bool = False) -> list:
         """
@@ -1911,6 +1954,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         if buy_coin:
             self.buy_coin_items(cfg)
         page = self._scan_screen(cfg)
+        for it in page:
+            it['page'] = 1
         self._log_found(page, '第 1 屏')
         items = page
         for i in range(self.SCROLL_DOWN_MAX):
@@ -1920,6 +1965,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 logger.error('MysteryShop: [比价] 下滑后离开商店页，本店记录中断')
                 break
             page = self._scan_screen(cfg)
+            for it in page:
+                it['page'] = i + 2
             self._log_found(page, f'第 {i + 2} 屏')
             items += page
         merged = self._merge_items(items)
@@ -1927,13 +1974,43 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         return merged
 
     def _merge_items(self, items: list) -> list:
-        """两屏有重叠时同一格会被识别两次，按「同类 + 锚点相距 25 像素内」合并。"""
+        """
+        把同一格在多个屏里的重复识别合并成一条。
+
+        **不能只按「坐标相距 25 像素内」判重**（旧实现，实测完全失效）：
+        商品列表一次上滑是整屏位移 100~250 像素，同一格在两屏的坐标差远大于 25，
+        所以从来没合上过。11-14 20:25 第 4 家店实摆 2 格（三星太鼓 50 / 四星太鼓 80），
+        日志却记成 4 件 —— 两屏各记了一遍，「本店合计」整整虚高一倍。
+
+        现在每条记录带屏号 page（由 _scan_shop 标注），按两种情况判重：
+          - **同屏**：仍用坐标近邻（同一格被重复识别，正常不会发生，纯保险）；
+          - **跨屏**：同「种类 + 片数」即同一格 —— 分组键和 _pick_cheapest 完全一致，
+            比价本来就按 (种类, 片数) 只选一件，跨屏再记一遍只会污染日志和比价池。
+        同款同片数在**同一屏**出现两格时不会被合掉（坐标不同），这是有意的：
+        那种情况两格都在本屏可见，各有独立剩余次数。
+        跨屏命中且价格不同时保留**单价更低**的那条（比价只认便宜的），
+        坐标与屏号沿用第一条，避免合并后屏号跳动影响后续判重。
+        """
         merged = []
         for it in items:
-            if any(o['kind'] == it['kind'] and abs(o['ax'] - it['ax']) <= 25
-                   and abs(o['ay'] - it['ay']) <= 25 for o in merged):
-                continue
-            merged.append(it)
+            hit = None
+            for idx, old in enumerate(merged):
+                if old['kind'] != it['kind'] or old['qty'] != it['qty']:
+                    continue
+                if old.get('page', 1) == it.get('page', 1):
+                    if (abs(old['ax'] - it['ax']) <= 25
+                            and abs(old['ay'] - it['ay']) <= 25):
+                        hit = idx
+                        break
+                else:
+                    hit = idx
+                    break
+            if hit is None:
+                merged.append(it)
+            elif it['unit'] < merged[hit]['unit']:
+                keep = merged[hit]
+                keep['price'] = it['price']
+                keep['unit'] = it['unit']
         return merged
 
     def _count_lines(self, image) -> list:
@@ -2159,26 +2236,34 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         return self.account_label or self.shop_tag
 
-    def _notify_daruma_found(self, image, ax: int, price: int, cfg) -> None:
+    def _notify_daruma_found(self, ax: int, price: int, cfg) -> None:
         """
-        识别到整只御行达摩就推一条消息（走全局推送通道，和一键协战 / 报错推送同一套）。
+        识别到整只御行达摩就记一笔，**不在发现时发邮件**。
 
         只在 _scan_screen 里、整只的四位价格复核成功之后调用 —— 碎片不会走到这里，
-        价格读不准（复核失败）的也不会，避免推一条「1920 其实是 920」的假消息。
+        价格读不准（复核失败）的也不会，避免记一条「1920 其实是 920」的假信息。
 
-        **与买不买完全解耦**：没勾选御行达摩、或者价格高于上限不买，同样要推 ——
+        **与买不买完全解耦**：没勾选御行达摩、或者价格高于上限不买，同样要记 ——
         用户要的是「店里刷出整只了」这个情报，好自己决定要不要手动上线抢。
 
-        去重：同一次运行里 (店面标签, 列号, 价格) 相同只推一次。扫描是逐屏做的，
-        滚动前后两屏有重叠，同一格必然被识别两次；换店 / 刷新后标签变了，
-        所以同一只在新的一批货里再出现，仍然照推。
+        去重：同一次运行里 (种类, 账号, 店面, 列号, 价格) 相同只记一次。扫描是逐屏做的，
+        滚动前后两屏有重叠，同一格必然被识别两次；换店 / 刷新后店面变了，
+        所以同一只在新的一批货里再出现，仍然照记。
 
-        推送失败绝不打断任务：网络、SMTP、没配渠道都只写一行日志。
+        推送时机（11-14 用户要求，见类里「达摩推送」注释）：
+          ① 一键协战调用（push_sink 非 None）→ 塞进调用方的收集器，并进「多号任务完成」；
+          ② 单独运行 → 塞进本趟的 _local_findings，run() 收尾统一发一封。
+        两种走向都不在发现的那一刻发消息，所以这里再没有「推送失败」分支。
+
+        截图不再随推送发出：合并后一封邮件只能内嵌一张图，逐条带图做不到。
         """
         if not cfg.black_daruma_push_enable:
             return
         tag = self._push_tag()
-        key = ('整只', tag, self._col_key(ax + 20), int(price))
+        # 键里必须带店面（shop_tag）：一键协战调用时 tag 恒为该号的角色名，同一号逛的
+        # 5 家店共用一个 tag，光靠 (列, 价格) 会把「第 1 家和第 3 家都有第 2 列 120 勾玉 2 片」
+        # 当成同一件漏掉。加店面后同店滚动两屏仍能正常去重。
+        key = ('整只', tag, self.shop_tag, self._col_key(ax + 20), int(price))
         if key in self.daruma_push_seen:
             logger.info(f'MysteryShop: 整只御行达摩（{tag} {price} 勾玉）这一趟已经推送过，跳过')
             return
@@ -2186,36 +2271,39 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         cap = cfg.black_daruma_max_price
         if not cfg.black_daruma:
-            action = '没有勾选「御行达摩」，不会自动买'
+            note = '未勾选购买'
         elif 0 < price <= cap:
-            action = f'不高于上限 {cap}，这一趟会自动买下'
+            note = '会自动买'
         else:
-            action = f'高于上限 {cap}，不会自动买 —— 想要请手动上线'
-        content = (f'{datetime.now():%m-%d %H:%M} {tag}\n'
-                   f'整只御行达摩：{price} 勾玉\n'
-                   f'{action}')
-        logger.info(f'MysteryShop: 推送整只御行达摩（{tag} {price} 勾玉）')
-        try:
-            if not self.config.notifier.push(title=self.PUSH_TITLE, content=content, image=image):
-                logger.warning('MysteryShop: 整只御行达摩推送失败，'
-                               '检查「设置 - 推送」是否已启用并配好渠道')
-        except Exception as e:
-            logger.warning(f'MysteryShop: 整只御行达摩推送异常，忽略：{e!r}')
+            note = f'超上限{cap}'
+        # 只收集、不即时发：一键协战优先，否则攒在本趟等 run() 收尾统一发一封。
+        # note 是短标记，越短越省合并邮件的字数（渠道单条约 4KB）。
+        self._collect_finding({
+            'kind': '整只',
+            'tag': tag,
+            'price': int(price),
+            'qty': 1,
+            'unit': None,
+            'note': note,
+            'time': datetime.now(),
+        })
+        logger.info(f'MysteryShop: 整只御行达摩（{tag} {price} 勾玉，{note}）已记入本趟汇总')
 
     def _notify_scrap_found(self, ax: int, price: int, qty: int, unit: float, cfg) -> None:
         """
-        识别到 2 片 / 3 片御行达摩碎片时推一条消息（配置里两项开关各管一个片数）。
+        识别到 2 片 / 3 片御行达摩碎片时记一笔，**不在发现时发邮件**（见类里「达摩推送」）。
 
         **与买不买完全解耦**：没勾「御行达摩碎片」购买、单价高于上限、勾玉不够，
-        只要识别到就推 —— 用户要的是「这个号店里有几片黑碎」这个情报，
+        只要识别到就记 —— 用户要的是「这个号店里有几片黑碎」这个情报，
         好决定要不要上线去用（他的场景是拿小号分享，不指望脚本自动买）。
 
-        只推 2 片 / 3 片：1 片几乎每店都有，推出来是噪声，配置里也不给这个选项。
-        正文按用户要求只给账号 + 道具名 + 价格，不带截图。
+        只记 2 片 / 3 片：1 片几乎每店都有，记下来是噪声，配置里也不给这个选项。
 
-        去重：同一次运行里 (种类, 账号, 列号, 价格, 片数) 相同只推一次。扫描是逐屏做的，
+        去重：同一次运行里 (种类, 账号, 店面, 列号, 价格, 片数) 相同只记一次。扫描是逐屏做的，
         滚动前后两屏有重叠，同一格必然被识别两次；带片数是因为同一列可能同时有 2 片和
         3 片两个格子，不能只看价格。
+
+        推送时机同一键协战 / 单独运行两条路，都不在发现那一刻发，见 _notify_daruma_found。
         """
         if qty == 2:
             if not cfg.black_daruma_scrap_push_2:
@@ -2226,22 +2314,95 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         else:
             return
         tag = self._push_tag()
-        key = ('碎片', tag, self._col_key(ax + 20), int(price), int(qty))
+        # 同整只：带店面，防止同号不同店的同列同价同片数互相顶掉
+        key = ('碎片', tag, self.shop_tag, self._col_key(ax + 20), int(price), int(qty))
         if key in self.daruma_push_seen:
-            logger.info(f'MysteryShop: {qty} 片黑碎（{tag} {price} 勾玉）这一趟已经推送过，跳过')
+            logger.info(f'MysteryShop: {qty} 片黑碎（{tag} {price} 勾玉）这一趟已经记过，跳过')
             return
         self.daruma_push_seen = set(self.daruma_push_seen) | {key}
 
-        content = (f'账号：{tag}\n'
-                   f'御行达摩碎片 {qty} 片，{price} 勾玉（{unit:.1f} 一片）')
-        logger.info(f'MysteryShop: 推送 {qty} 片黑碎（{tag} {price} 勾玉，单价 {unit:.1f}）')
+        self._collect_finding({
+            'kind': '碎片',
+            'tag': tag,
+            'price': int(price),
+            'qty': int(qty),
+            'unit': float(unit),
+            'note': '',
+            'time': datetime.now(),
+        })
+        logger.info(f'MysteryShop: {qty} 片黑碎（{tag} {price} 勾玉，单价 {unit:.1f}）已记入本趟汇总')
+
+    def _collect_finding(self, record: dict) -> None:
+        """把一条达摩发现交给「汇总出口」，发现本身不触发任何推送。
+
+        两条路：一键协战注入的 push_sink 优先（最终并进「多号任务完成」那一封），
+        否则攒进本趟的 _local_findings，由 run() 收尾发一封。
+        """
+        if self.push_sink is not None:
+            self.push_sink.append(record)
+            return
+        # 单独运行：本趟攒着。类属性默认 None，理论上 run_shop_body 已置空列表，这里防一手。
+        if self._local_findings is None:
+            self._local_findings = []
+            logger.warning('MysteryShop: 本趟汇总列表没初始化，现场补一个')
+        self._local_findings.append(record)
+
+    @staticmethod
+    def format_findings(findings) -> list:
+        """按账号把达摩发现聚合成若干行，单独运行和一键协战共用这一份格式。
+
+        为什么按账号聚合而不是一件一行：一轮 20 个号 × 5 家店，2/3 片黑碎很容易刷出
+        几十件，一件一行会把账号名重复几十遍，渠道单条上限（约 4KB）撑爆后只能改发文件。
+        聚合后一个号一行、同号多件用「、」连着，信息量不减。
+
+        只出文本、不带截图：合并后一封邮件只能内嵌一张图，逐条带图做不到。
+        """
+        grouped = {}
+        for item in findings or []:
+            tag = item.get('tag') or '未知账号'
+            grouped.setdefault(tag, []).append(item)
+        lines = []
+        for tag, items in grouped.items():
+            parts = []
+            for item in items:
+                if item.get('kind') == '整只':
+                    note = item.get('note') or ''
+                    parts.append(
+                        f"整只{item['price']}勾玉" + (f'({note})' if note else '')
+                    )
+                else:
+                    parts.append(
+                        f"{item['qty']}片{item['price']}勾玉({item['unit']:.1f}/片)"
+                    )
+            lines.append(f'{tag}：' + '、'.join(parts))
+        return lines
+
+    def push_findings_summary(self) -> None:
+        """单独运行本任务时，把这一趟扫到的达摩合并成一封发出。
+
+        **一次商店只发一封**（用户 11-14 要求），不再发现一件发一封。
+        被一键协战调用时不走这里：push_sink 非 None，发现已交给调用方，
+        由它并进「多号任务完成」那一封。
+
+        推送失败只记日志，绝不影响任务收尾（和原来的即时推送同一个原则）。
+        """
+        if self.push_sink is not None:
+            return
+        findings = list(self._local_findings or [])
+        if not findings:
+            logger.info('MysteryShop: 本趟没有达摩发现，不发汇总推送')
+            return
+        lines = self.format_findings(findings)
+        content = f'{datetime.now():%m-%d %H:%M}\n' + '\n'.join(lines)
+        logger.info(f'MysteryShop: 本趟 {len(findings)} 件达摩发现汇总成一封推送')
         try:
-            if not self.config.notifier.push(title=self.SCRAP_PUSH_TITLE.format(qty=qty),
-                                            content=content):
-                logger.warning('MysteryShop: 黑碎推送失败，'
+            if not self.config.notifier.push(title=self.PUSH_TITLE, content=content):
+                logger.warning('MysteryShop: 达摩汇总推送失败，'
                                '检查「设置 - 推送」是否已启用并配好渠道')
         except Exception as e:
-            logger.warning(f'MysteryShop: 黑碎推送异常，忽略：{e!r}')
+            logger.warning(f'MysteryShop: 达摩汇总推送异常，忽略：{e!r}')
+        # 发完就清空：run() 出错重入或手动再调一次时不会把同一批发现重复发一遍
+        self._local_findings = []
 
     def _scan_screen(self, cfg, notify: bool = True) -> list:
         """
@@ -2303,7 +2464,7 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 # 推送只认「复核成功」的整只：读不准的价格推出去只会误导用户，
                 # 宁可少推一次也不推错。碎片在上面就被分走了，不会走到这里。
                 if notify:
-                    self._notify_daruma_found(image, ax, price, cfg)
+                    self._notify_daruma_found(ax, price, cfg)
             elif notify:
                 # 碎片只推 2 片 / 3 片，片数与开关都在 _notify_scrap_found 里判。
                 # 放在这里（不是 items 循环之后）是为了拿到本格的 qty 和单价。
@@ -2500,18 +2661,203 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             plan.setdefault(it['shop'], []).append(it)
         return plan
 
-    def _buy_plan(self, plan: dict, cur_idx: int, cfg) -> int:
-        """从当前位置往回走，走到哪家买哪家。"""
+    def _buy_plan(self, plan: dict, cur_idx: int, catalogs: list, cfg) -> int:
+        """
+        从当前位置往回走，走到哪家买哪家。
+
+        **某家到不了不再整体放弃**（旧实现是 `return bought`）：退不到第 3 家，
+        不代表第 1 家也退不到（同一方向继续退往往还能走），而旧写法一放弃，
+        后面算好的 plan 全部作废、一件都不买。现在改成跳过这家、继续试下一家，
+        最后汇总哪几家没去成。
+        """
         bought = 0
+        failed = []
         for target in sorted(plan.keys(), reverse=True):
-            while cur_idx > target:
-                if not self._switch_shop(self.I_MS_BEFORE, '上一家'):
-                    logger.error(f'MysteryShop: [比价] 退不到第 {target} 家，剩下的都不买了')
-                    return bought
-                cur_idx -= 1
+            start_idx = cur_idx
+            ok, cur_idx = self._goto_shop(target, cur_idx, catalogs, cfg)
+            if not ok:
+                failed.append(target)
+                logger.error(f'MysteryShop: [比价] 到不了第 {target} 家，'
+                             f'跳过这 {len(plan[target])} 件，继续试下一家')
+                continue
+            if cur_idx != start_idx:
+                logger.info(f'MysteryShop: [比价] 已到第 {cur_idx} 家'
+                            f'（从第 {start_idx} 家移动 {abs(start_idx - cur_idx)} 次），'
+                            f'开始买计划 {len(plan[target])} 件')
             for it in plan[target]:
                 bought += self._buy_recorded(it, cfg)
+        if failed:
+            logger.warning(f'MysteryShop: [比价] 有 {len(failed)} 家没去成：'
+                           f'第 {sorted(failed)} 家，其余照买')
         return bought
+
+    @staticmethod
+    def _signature(items: list, page: int = None) -> set:
+        """
+        一家店的指纹：{(种类, 片数, 单价)}；page 给定时只取该屏的（顶屏 = page 1）。
+
+        单价必须进来，否则「两家店都卖四星太鼓」就分不开；片数必须进来，
+        否则 1 片装和 2 片装的黑碎会被当成同一件。单价取整是为了扛 OCR 抖动。
+
+        **定位必须用顶屏指纹，不能用整店**（11-14 真机踩到）：整店指纹下，
+        「顶屏 1 件」对「整店 2 件」的包含关系也被算成完全命中——实测第 5 家
+        （三星50+四星80）把第 1、2 家（只有四星80）的顶屏全认成了自己，
+        三家并列 1.0，定位直接失效。顶屏对顶屏才是同一视口的同一批格子。
+        """
+        out = set()
+        for it in items:
+            if page is not None and it.get('page', 1) != page:
+                continue
+            out.add((it['kind'], it['qty'], int(round(it['unit']))))
+        return out
+
+    def _match_shop(self, catalogs: list, cfg, prefer: int = None, aim: int = None):
+        """
+        扫一眼当前店的顶屏，反查它到底是第几家。认不出返回 None。
+
+        判据是「当前顶屏的指纹」与「每家店第 1 屏的指纹」的 **Jaccard 相似度**
+        （交集 / 并集），取最高者，低于 SHOP_MATCH_RATE 就放弃（宁可不认，也不猜错）。
+
+        **必须顶屏对顶屏、且用 Jaccard**（11-14 真机两条实测教训）：
+        ① 拿顶屏去比「整店记录」时，包含关系会被算成满分 —— 第 5 家（三星50+四星80）
+           把只摆四星80 的第 1、2 家顶屏全认成自己，三家并列，定位失效；
+        ② 只算「交集 / 顶屏件数」时，整店多大都不吃亏，同样会偏袒东西多的店。
+        Jaccard 两边都罚：顶屏多一件、少一件都掉分，正好对上「同一视口同一批格子」。
+
+        **并列时必须给偏好，不能取第一个**（11-14 真机测出来的坑）：
+        同一个好友可以分享两次，两家店的货完全可能一模一样（16416 实测第 1、2 家都是
+        「过山·四星太鼓 80」），指纹逐字相同。这时若返回第一个，就成了「永远认成第 1 家」，
+        于是「以为第 2 家 → 纠正成第 1 家 → 走回来又判成第 1 家」来回打转，
+        最多白点 60 次箭头才放弃（实测漂到隔壁空店还报成功）。
+        并列时的处理顺序：
+          ① prefer（当前判断）在并列里 → 保留它，**无法证伪时不动比乱动强**；
+          ② 否则有 aim（要去的目标）→ 取并列里离目标最近的那个，少走冤枉路；
+          ③ 都没有 → 认不出，返回 None 交给调用方保守处理。
+        """
+        got = self._signature(self._scan_screen(cfg, notify=False))
+        if not got:
+            return None
+        scores = []
+        for idx, items in catalogs:
+            sig = self._signature(items, page=1)
+            if not sig:
+                continue
+            union = len(got | sig)
+            scores.append((len(got & sig) / union if union else 0.0, idx))
+        if not scores:
+            logger.warning(f'MysteryShop: [定位] 顶屏 {len(got)} 件，但所有店的记录都是空的，无法比对')
+            return None
+        best_rate = max(s for s, _ in scores)
+        if best_rate < self.SHOP_MATCH_RATE:
+            logger.warning(f'MysteryShop: [定位] 顶屏 {len(got)} 件认不出是哪家店'
+                           f'（最高匹配率 {best_rate:.2f} < {self.SHOP_MATCH_RATE}）')
+            return None
+        cands = sorted(idx for s, idx in scores if abs(s - best_rate) < 1e-9)
+        if len(cands) == 1:
+            return cands[0]
+        if prefer is not None and prefer in cands:
+            logger.info(f'MysteryShop: [定位] 第 {cands} 家指纹完全相同、无法区分，'
+                        f'保持当前判断第 {prefer} 家')
+            return prefer
+        if aim is not None:
+            pick = min(cands, key=lambda c: (abs(c - aim), c))
+            logger.warning(f'MysteryShop: [定位] 第 {cands} 家指纹完全相同、无法区分，'
+                           f'按最接近目标第 {aim} 家取第 {pick} 家')
+            return pick
+        logger.warning(f'MysteryShop: [定位] 第 {cands} 家指纹完全相同且都不等于'
+                       f'当前判断第 {prefer} 家，无法定位')
+        return None
+
+    def _locate_shop(self, catalogs: list, cfg, cur_idx: int):
+        """
+        索引错位后重新认出「现在站在第几家」。**只在切店失败这条异常路径上调用。**
+
+        先认当前这家；认不出就往回（上一家方向）探，最多 SHOP_RESYNC_MAX 家。
+        左箭头消失 = 回到自己的店（第 0 家，没有左箭头就是它的固有标志）。
+        返回真实序号；认不出返回 None，调用方保持原索引并放弃那一家 —— 绝不猜。
+        """
+        real = self._match_shop(catalogs, cfg)
+        if real is not None:
+            return real
+        for step in range(1, self.SHOP_RESYNC_MAX + 1):
+            self.screenshot()
+            if not self.appear(self.I_MS_BEFORE):
+                logger.info(f'MysteryShop: [定位] 左箭头已消失（自己的店），'
+                            f'判定第 0 家（从以为的第 {cur_idx} 家退回 {step - 1} 次后）')
+                return 0
+            if not self._switch_by_image(self.I_MS_BEFORE, '上一家'):
+                logger.warning('MysteryShop: [定位] 往回探时切店也失败，放弃定位')
+                return None
+            real = self._match_shop(catalogs, cfg)
+            if real is not None:
+                logger.warning(f'MysteryShop: [定位] 往回探 {step} 家后认出是第 {real} 家')
+                return real
+        return None
+
+    def _goto_shop(self, target: int, cur_idx: int, catalogs: list, cfg):
+        """
+        走到第 target 家店，返回 (是否到位, 当前序号)。
+
+        正常路径纯按索引走、一步屏都不扫（和旧实现一样快）。两处用到指纹：
+        ① 切店失败（箭头不见 / 画面一直在动超时）→ 索引已不可信，重定位后纠正；
+        ② 刚走完还没买时核对一次（只有一次扫屏）—— 「以为到了」和「真的到了」不是
+           一回事，前面某次「判成功」如果是多点/漏点造成的误判，这里能抓出来。
+        有了 ② 才谈得上自愈：索引歪了会被改回真实位置，而不是一路歪到底。
+        """
+        guard = 0
+        limit = self.COMPARE_MAX_SHOPS * 2
+        # 纠正次数上限：指纹判错时不该无限来回走。实测两家店货完全相同时，
+        # 「以为第 2 → 认成第 1 → 走回来又认成第 1」会一直打转，60 步（约 3 分钟）
+        # 白点箭头，最后还能漂到隔壁店报成功。超过 3 次就认栽放弃这一家。
+        fixes = 0
+        moved = 0
+        while 1:
+            guard += 1
+            if guard > limit:
+                logger.error(f'MysteryShop: [比价] 在 {cur_idx} 与第 {target} 家之间'
+                             f'来回 {guard} 次仍未到位，放弃')
+                return False, cur_idx
+            if fixes > self.SHOP_RESYNC_GIVEUP:
+                logger.error(f'MysteryShop: [比价] 到第 {target} 家的过程中索引被纠正'
+                             f'{fixes} 次仍对不上，放弃这一家')
+                return False, cur_idx
+            if cur_idx == target:
+                if not moved:
+                    return True, cur_idx
+                # 刚走到，核对一次（此刻刚切完店，画面在顶部，扫顶屏有效）
+                # prefer=当前判断、aim=目标：并列（两家店货完全一样）时优先不动，
+                # 其次取离目标最近的，见 _match_shop
+                real = self._match_shop(catalogs, cfg, prefer=cur_idx, aim=target)
+                if real is None or real == cur_idx:
+                    return True, cur_idx
+                logger.warning(f'MysteryShop: [比价] 到达后核对不符：以为第 {cur_idx} 家，'
+                               f'实际第 {real} 家，按实际位置继续')
+                cur_idx = real
+                moved = 0
+                fixes += 1
+                continue
+            backward = cur_idx > target
+            rule = self.I_MS_BEFORE if backward else self.I_MS_NEXT
+            label = '上一家' if backward else '下一家'
+            if self._switch_by_image(rule, label):
+                cur_idx += -1 if backward else 1
+                moved += 1
+                continue
+            # 切不动了：先靠指纹重定位（索引已经不可信），再继续走
+            real = self._locate_shop(catalogs, cfg, cur_idx)
+            if real is None:
+                logger.error(f'MysteryShop: [比价] 从第 {cur_idx} 家切不动、'
+                             f'指纹也认不出是哪家，到不了第 {target} 家')
+                return False, cur_idx
+            if real == cur_idx:
+                logger.error(f'MysteryShop: [比价] 第 {cur_idx} 家就是当前位置、'
+                             f'箭头又切不动（可能已到头），到不了第 {target} 家')
+                return False, cur_idx
+            logger.warning(f'MysteryShop: [比价] 索引纠正：以为在第 {cur_idx} 家，'
+                           f'实际是第 {real} 家')
+            cur_idx = real
+            moved = 0
+            fixes += 1
 
     def _buy_recorded(self, it: dict, cfg) -> int:
         """
@@ -2548,51 +2894,123 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         logger.warning(f'MysteryShop: [比价] 目标店里没再找到 {label} 单价 {it["unit"]:.0f}')
         return 0
 
-    def _switch_shop(self, rule, label: str) -> bool:
+    def _wait_switch_settled(self, before):
         """
-        点一次切店箭头，确认画面真的换了才返回 True。
+        点击切店箭头后，等画面静止下来。
 
-        判据用画面差而不是 OCR 好友名：自己的店根本没有好友名，
-        而且 OCR 读歪一个字就会把「切成功」判成「没切」。
+        判法：每 SHOP_SWITCH_INTERVAL 秒采一帧，相邻两帧差 < SHOP_SETTLE_DIFF 且
+        连续 SHOP_SETTLE_TRIES 次成立，才认为画面停住了（避开动画中间帧、
+        也避开「点击生效但动画晚开始」被误判成没切）。
+
+        :param before: 点击前的截图（np.ndarray）
+        :return: (diff 点击前后总变化, settle 静止时相邻帧差, elapsed 耗时秒, settled 是否等到静止)
+        """
+        t0 = datetime.now()
+        timer = Timer(self.SHOP_SWITCH_TIMEOUT).start()
+        prev = None
+        diff = settle = 0.0
+        still_times = 0
+        while 1:
+            sleep(self.SHOP_SWITCH_INTERVAL)
+            self.screenshot()
+            current = self.device.image
+            diff = float(np.abs(before.astype(np.int16) - current.astype(np.int16)).mean())
+            if prev is not None:
+                settle = float(np.abs(prev.astype(np.int16) - current.astype(np.int16)).mean())
+                if settle < self.SHOP_SETTLE_DIFF:
+                    still_times += 1
+                    if still_times >= self.SHOP_SETTLE_TRIES:
+                        return diff, settle, (datetime.now() - t0).total_seconds(), True
+                else:
+                    still_times = 0
+            prev = current.copy()
+            if timer.reached():
+                return diff, settle, (datetime.now() - t0).total_seconds(), False
+
+    def _switch_by_image(self, rule, label: str) -> bool:
+        """
+        点一次切店箭头，用「画面变化」判断这一下是否真的切走了。
+
+        每次点击都走完整一轮「点一次 -> 等静止 -> 比总变化」，**一轮没判定清楚绝不补点**：
+
+        - 静止后 diff >= MIN_SWITCH_DIFF  -> 切成功
+        - 静止后 diff <  MIN_SWITCH_DIFF  -> 点击被吞，允许重试（下一轮重新截图再点）
+        - 到 SHOP_SWITCH_TIMEOUT 画面还在动 -> **不重试**，直接失败
+
+        最后一条是 11-14 事故的止血点：那次第一次点击其实已经切走了，但旧判据
+        （整图差 ≥10）没认出来，空等 20 秒超时后又点一次，于是多退一家，
+        在错误的店里找 64 的四星太鼓买不到。所以超时时宁可放弃也不补点。
+
+        :param rule: 箭头素材（I_MS_BEFORE 上一家 / I_MS_NEXT 下一家）
+        :param label: 日志里的名字，如「上一家」
+        :return: 是否确认切换成功
         """
         for attempt in range(self.SHOP_SWITCH_TRIES):
             self.screenshot()
             if not self.appear(rule):
-                logger.warning(f'MysteryShop: [比价] 没找到{label}箭头（已在第一家？）')
+                logger.warning(f'MysteryShop: [切店] 没找到{label}箭头（已在第一家？）')
                 return False
             before = self.device.image.copy()
             if not self.appear_then_click(rule, interval=1.0):
+                logger.info(f'MysteryShop: [切店] {label}箭头点击未生效（第 {attempt + 1} 次）')
                 sleep(0.5)
                 continue
-            timer = Timer(self.SHOP_SWITCH_TIMEOUT).start()
-            while 1:
-                sleep(0.5)
-                self.screenshot()
-                diff = float(np.abs(before.astype(np.int16)
-                                    - self.device.image.astype(np.int16)).mean())
-                if diff >= self.SHOP_SWITCH_DIFF:
-                    # 差值够了还不算数：切店动画的中间帧也能冲到 10 以上，那时判成功
-                    # 就等于把「切到一半」当成「切完了」，后面按家数算的索引全歪。
-                    # 再等 0.4 秒比一次，画面静止才认为真切完（11-04 的 7.9 假成功就是
-                    # 中间帧，见 SHOP_SWITCH_DIFF 的注释）。
-                    prev = self.device.image.copy()
-                    sleep(0.4)
-                    self.screenshot()
-                    settle = float(np.abs(prev.astype(np.int16)
-                                          - self.device.image.astype(np.int16)).mean())
-                    if settle < self.SHOP_SETTLE_DIFF:
-                        logger.info(f'MysteryShop: [比价] {label}切换成功'
-                                    f'（画面变化 {diff:.1f}，静止差 {settle:.1f}）')
-                        return True
-                    if timer.reached():
-                        logger.warning(f'MysteryShop: [比价] {label}后画面一直没停，'
-                                       f'第 {attempt + 1} 次重试')
-                        break
-                    continue
-                if timer.reached():
-                    logger.warning(f'MysteryShop: [比价] {label}后画面没变，第 {attempt + 1} 次重试')
-                    break
+            diff, settle, elapsed, settled = self._wait_switch_settled(before)
+            if not settled:
+                self._note_switch(label, 'timeout', diff, settle)
+                logger.warning(f'MysteryShop: [切店] {label}后 {elapsed:.1f}s 画面一直在动'
+                               f'（累计变化 {diff:.1f}），不重试以免多点一次退过头一家')
+                return False
+            if diff >= self.MIN_SWITCH_DIFF:
+                self._note_switch(label, 'ok', diff, settle)
+                logger.info(f'MysteryShop: [切店] {label}切换成功（第 {attempt + 1} 次点击，'
+                            f'画面变化 {diff:.1f}，静止差 {settle:.1f}，耗时 {elapsed:.1f}s）')
+                return True
+            self._note_switch(label, 'stale', diff, settle)
+            logger.warning(f'MysteryShop: [切店] {label}后画面静止但几乎没变'
+                           f'（画面变化 {diff:.1f} < {self.MIN_SWITCH_DIFF}，静止差 {settle:.1f}，'
+                           f'耗时 {elapsed:.1f}s），判定点击被吞，第 {attempt + 1} 次重试')
+        logger.warning(f'MysteryShop: [切店] {label}重试 {self.SHOP_SWITCH_TRIES} 次仍未切走，放弃')
         return False
+
+    def _note_switch(self, label: str, verdict: str, diff: float, settle: float) -> None:
+        """
+        记一次切店判定，供本趟结束时汇总标定 MIN_SWITCH_DIFF（11-14 新增）。
+
+        为什么要汇总：`MIN_SWITCH_DIFF=1.0` 是按日志分布推的、**不是实机标定的值**。
+        「点击被吞」和「真切店」各自的 diff 分布，只有跑一趟真实数据才看得清；
+        一条条翻日志容易被「等满 20 秒」那些行淹掉，所以任务末尾打一行 min/max。
+        """
+        stats = getattr(self, '_switch_stats', None)
+        if stats is None:
+            stats = self._switch_stats = []
+        stats.append((verdict, label, float(diff), float(settle)))
+
+    def _log_switch_stats(self) -> None:
+        """把本趟所有切店判定的分布打一行，用来定 MIN_SWITCH_DIFF 的真实取值。"""
+        stats = getattr(self, '_switch_stats', [])
+        if not stats:
+            return
+
+        def rng(verdict: str):
+            vals = [d for v, _, d, _ in stats if v == verdict]
+            return (min(vals), max(vals), len(vals)) if vals else (0.0, 0.0, 0)
+
+        ok_min, ok_max, ok_n = rng('ok')
+        st_min, st_max, st_n = rng('stale')
+        to_min, to_max, to_n = rng('timeout')
+        logger.info(f'MysteryShop: [标定] 本趟切店 {len(stats)} 次判定：'
+                    f'成功 {ok_n} 次（画面变化 {ok_min:.1f}~{ok_max:.1f}）、'
+                    f'判被吞 {st_n} 次（{st_min:.1f}~{st_max:.1f}）、'
+                    f'超时 {to_n} 次（{to_min:.1f}~{to_max:.1f}）；'
+                    f'当前 MIN_SWITCH_DIFF={self.MIN_SWITCH_DIFF}')
+        # 被吞的上界一旦接近阈值，说明阈值定高了：真切店可能被判成被吞 → 多点一次。
+        if st_n and st_max > self.MIN_SWITCH_DIFF * 0.5:
+            logger.warning(f'MysteryShop: [标定] 判被吞的最大变化 {st_max:.1f} 已超过阈值的 '
+                           f'{self.MIN_SWITCH_DIFF * 0.5:.1f} 倍，建议上调 MIN_SWITCH_DIFF')
+        if to_n and ok_min and to_min > ok_min:
+            logger.warning(f'MysteryShop: [标定] 超时那几次的变化 {to_min:.1f} 已不低于'
+                           f'成功的最小值 {ok_min:.1f}，说明超时不全是动画未停')
 
     def _at_top(self) -> bool:
         """
@@ -2654,10 +3072,22 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         self.screenshot()
         before = self.device.image.copy()
         self.swipe(swipe)
+        # 滑动不计入「同一按钮连点」防卡死统计（module/device/device.py:31 的
+        # click_record = deque(maxlen=15)，同按钮在最近 15 次里占满 10 次就抛
+        # GameTooManyClickError，script.py 当成卡死 -> 重启游戏 + 重跑任务）。
+        # 一趟要逛自己的店 + 4 家好友 = 5 家，每家固定 2 次下滑（首屏 + 到底确认），
+        # 正好 10 次，是必然命中的；11-14 20:59 / 21:01 连崩两次就是这里。
+        # 之所以那时才崩：切店判据改准后每店只点 1 次 NEXT、总点击从 21 降到 15，
+        # 下滑在窗口里的占比从 9/15 顶到 10/15，刚好破线（20:24 那趟 9 次是侥幸）。
+        # 摘掉是安全的：滑动有「到底」（SCROLL_MIN_DIFF）和「到顶」（_at_top 判据 +
+        # _scroll_to_top 最多 2 次）双重上界，不存在「点了没反应还一直点」；
+        # NEXT / BEFORE / 购买这些点击记录一条不动，真卡死照样拦得住。
+        removed = self.device.click_record_remove(swipe.name)
         sleep(1.5)
         self.screenshot()
         diff = float(np.abs(before.astype(np.int16) - self.device.image.astype(np.int16)).mean())
-        logger.info(f'MysteryShop: {swipe.name} 后画面变化 {diff:.1f}')
+        logger.info(f'MysteryShop: {swipe.name} 后画面变化 {diff:.1f}'
+                    f'（已从连点统计摘除 {removed} 条）')
         return diff
 
     def _shop_level(self, retry: int = 3) -> int:

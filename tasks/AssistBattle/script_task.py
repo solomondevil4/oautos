@@ -56,6 +56,11 @@ class ScriptTask(
     # 当前正在执行的账号对象, 由 run_one_account 在切号后设置, 跑完清空。
     # run_current_account 没有 account 参数, 判断「本号要不要跑神秘商店」要靠它。
     _current_account = None
+    # 本轮神秘商店扫到的整只/2片/3片黑碎。MysteryShop 被本任务调用时不自己发邮件,
+    # 而是塞进这个列表, 由 run_push_result 合并进「多号任务完成」那一封
+    # (用户 11-14 要求: 不要再发现一次就发一封邮件)。
+    # None = 本轮还没初始化; run_switch_account 每轮重置成空列表。
+    mystery_shop_findings = None
 
     def run(self):
         self.conf = self.config.model.assist_battle
@@ -260,6 +265,29 @@ class ScriptTask(
             return ''
         return f"寄售券汇总：{len(tickets)}个账号买券，合计 {sum(tickets)} 张"
 
+    def format_mystery_shop_findings(self) -> list:
+        """本轮神秘商店的达摩发现，拼成「多号任务完成」里的一段。
+
+        为什么并进这一封（用户 11-14 要求）：以前 MysteryShop 扫到 2 片 / 3 片黑碎或
+        整只御行达摩就立刻推一封，一轮 20 个号、每家店都可能刷出，手机上是几十封
+        「神秘商店：发现 N 片御行达摩碎片」，真正要看的协战结果反而被埋掉。
+
+        逐行格式由 MysteryShop.format_findings() 提供（单独运行那封用的也是它，
+        同一份格式只维护一处）；这里只多拼一行标题，写明多少个账号、多少件。
+
+        :return: 若干行文本；本轮没有发现时返回空列表（调用方直接跳过这一段）
+        """
+        findings = self.mystery_shop_findings or []
+        if not findings:
+            return []
+        lines = MysteryShopScriptTask.format_findings(findings)
+        if not lines:
+            return []
+        return [
+            f'神秘商店达摩（{len(lines)}个账号 {len(findings)} 件）：',
+            *lines,
+        ]
+
     def run_push_result(self, results):
         """输出协战结果: 今日总进度只列次数不正常的账号"""
         logger.hr('AssistBattle Result', 2)
@@ -314,6 +342,14 @@ class ScriptTask(
                 message += self.format_assist_count(result)
                 logger.info(message)
                 push_content.append(message)
+        # 神秘商店达摩发现（整只 / 2 片 / 3 片黑碎）：本轮所有号汇总成一段。
+        # 这些以前是 MysteryShop 发现一件发一封邮件，20 个号一轮能刷出几十封，
+        # 用户 11-14 要求统一并到跑完这一封里。下面超限分支也要强制保留这一段。
+        ms_lines = self.format_mystery_shop_findings()
+        if ms_lines:
+            for message in ms_lines:
+                logger.info(message)
+            push_content.extend(ms_lines)
         # 推送协战完成结果: 超过渠道单条上限时, 完整明细走文件
         if self.conf.push_config.result_push_enable:
             # 寄售券 CSV: 开启且有买券数据时必发(文本里已不含券数, 数量从文件获取)
@@ -339,6 +375,8 @@ class ScriptTask(
                             line for line in push_content
                             if line.startswith('切换失败')
                         ]
+                        # 达摩发现是用户最在意的情报，超限改发文件时也必须留在摘要里
+                        summary.extend(ms_lines)
                         summary.append(
                             f'明细过长，寄售券数据（{bought}个账号）已以 CSV 文件发送'
                         )
@@ -362,6 +400,8 @@ class ScriptTask(
                         line for line in push_content
                         if line.startswith('切换失败')
                     ]
+                    # 同 CSV 分支：达摩发现不随明细进文件，留在摘要里
+                    summary.extend(ms_lines)
                     summary.append('明细过长，完整内容已以文件发送')
                     self.config.notifier.push(
                         title='多号任务完成',
@@ -379,6 +419,14 @@ class ScriptTask(
             # 寄售券 CSV: 无论账号多少, 开启且有数据就发文件
             if csv_file:
                 self.config.notifier.push_file(*csv_file)
+        elif ms_lines:
+            # 协战结果推送没开，但达摩发现是用户在【神秘商店】页单独开的开关，
+            # 不能连带吞掉：只发这一段，有发现就发、没有就静默（和原来的不推送一致）。
+            self.config.notifier.push(
+                title='多号任务完成',
+                content='{}\n{}'.format(self.config.config_name, '\n'.join(ms_lines)),
+            )
+            logger.info('协战结果推送未开启，仅推送神秘商店达摩发现')
 
     def run_switch_account(self):
         """切换账号并执行协战任务"""
@@ -386,6 +434,9 @@ class ScriptTask(
         results = []
         # 最终切换失败的账号(重试后仍失败, 或未开启重试时首轮失败), 供推送使用
         self.switch_failed_accounts = []
+        # 神秘商店的达摩发现每轮从干净列表开始: 上一轮扫到的不能混进这一轮的汇总邮件。
+        self.mystery_shop_findings = []
+        logger.info('MysteryShop findings of this round reset')
         if not accounts:
             logger.info('No AssistBattle account configured, exit')
         else:
@@ -847,6 +898,13 @@ class ScriptTask(
             task = MysteryShopScriptTask(self.config, self.device)
             # 商店任务自己不知道当前账号，把账号标签注入进去，推送正文才能标出是哪个小号。
             task.account_label = self._push_account_label(self._current_account)
+            # 达摩发现不在这里发邮件：塞进本轮收集器，等所有号跑完并进「多号任务完成」。
+            # 收集器为空（理论上不会）时补一个，避免 run 到一半 AttributeError。
+            if self.mystery_shop_findings is None:
+                self.mystery_shop_findings = []
+            task.push_sink = self.mystery_shop_findings
+            logger.info(f'MysteryShop 达摩发现改为汇总推送，当前已收集 '
+                        f'{len(self.mystery_shop_findings)} 件')
             done = task.run_shop_body()
         except RequestHumanTakeover:
             # 需要人工介入的一律往上抛，和 run_own_wanted_quests 的处理保持一致
