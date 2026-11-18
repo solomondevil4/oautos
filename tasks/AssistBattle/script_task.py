@@ -21,7 +21,7 @@ from tasks.DailyTrifles.script_task import ScriptTask as DailyTriflesScriptTask
 from tasks.KekkaiUtilize.script_task import ScriptTask as KekkaiUtilizeScriptTask
 from tasks.KekkaiUtilize.page import page_guild_realm
 from tasks.MysteryShop.script_task import ScriptTask as MysteryShopScriptTask
-from tasks.GameUi.page import page_main, page_assist_battle, page_mall, page_friends
+from tasks.GameUi.page import page_main, page_assist_battle, page_mall
 from tasks.AssistBattle.page import page_sign_act
 from tasks.GameUi.assets import GameUiAssets
 from tasks.WantedQuests.assets import WantedQuestsAssets
@@ -672,10 +672,18 @@ class ScriptTask(
         # 不执行协战任务时，可以用来小号挂日常
         start_evozone = 1
         start_realmraid = 1
+        # 开头就没读到协战次数（好友页签自愈失败）时置 True，结尾不再重试
+        count_unreadable = False
 
         # 获取协战次数
         if self.evozone_enabled() or self.conf.assist_battle_config.realmraid_enable:
             start_evozone, start_realmraid = self.get_assist_battle_count()
+            if start_evozone is None or start_realmraid is None:
+                # 读不到次数就不知道还能打几次，本号整段跳过（协战 + 依赖次数的日常），
+                # 比硬闯好友页卡死重启划算
+                count_unreadable = True
+                start_evozone, start_realmraid = 0, 0
+                logger.warning('本号读不到协战次数（好友页签自愈失败），跳过本号协战与日常')
 
         # TODO 限时活动强力式神免费领
         if (
@@ -819,7 +827,19 @@ class ScriptTask(
 
         # 统计本次执行完成的协战任务
         if self.evozone_enabled() or self.conf.assist_battle_config.realmraid_enable:
-            end_evozone, end_realmraid = self.get_assist_battle_count()
+            if count_unreadable:
+                # 开头就读不到，结尾再自愈一次只会多耗两轮点击，直接按「没动」记
+                logger.warning('开头读不到协战次数，结尾不再重读，本次完成数按 0 记')
+                end_evozone, end_realmraid = start_evozone, start_realmraid
+            else:
+                end_evozone, end_realmraid = self.get_assist_battle_count()
+                if end_evozone is None or end_realmraid is None:
+                    # 用开头读数顶替：等价于「本次一次没打」，不会把今日进度记成打满
+                    logger.warning(
+                        '结尾读不到协战次数，本次完成数按 0 记，今日进度沿用开头读数 '
+                        '（觉醒 %s / 结界 %s）', start_evozone, start_realmraid,
+                    )
+                    end_evozone, end_realmraid = start_evozone, start_realmraid
             evozone_done = start_evozone - end_evozone
             realmraid_done = start_realmraid - end_realmraid
             # 今天已经完成的任务
@@ -1239,7 +1259,7 @@ class ScriptTask(
         连锁弹窗点着点着弹窗没了，多点的这一下原本会落在红 X 上把好友页关掉
         （11-09 实测真的关过一次），现在只会点在两个按钮之间的底板上。
         素材没命中而 OCR 命中时(标题换位置/素材过期)，同样用这个安全落点。
-        另外 `_ensure_friends_tab` / `_search_friend_group` 里都加了「是否还在好友页」
+        另外 `_ensure_friends_tab_ready` / `_search_friend_group` 里都加了「是否还在好友页」
         的复查：万一真被点关了，会重新进入而不是继续对着庭院 OCR。
 
         这个弹窗是连锁的（点掉一个再弹一个），所以是「点到看不见为止」，
@@ -1308,42 +1328,99 @@ class ScriptTask(
                 return True
         return False
 
-    def _ensure_friends_tab(self) -> bool:
-        """确保左侧是「好友」列表，而不是「最近」。
+    # 「好友」页签自愈：最多 2 轮。不要再往上加 —— 每轮至少一次入口点击 +
+    # 一次页签点击，轮数多了会自己把点击历史撞到防连点阈值上。
+    FRIENDS_TAB_READY_TRIES = 2
+    # 点庭院好友入口后等窗口渲染的时间；11-18 实测列表 0.6~1.0s 内出来。
+    FRIENDS_WINDOW_OPEN_WAIT = 1.0
 
-        11-09 实测(16416)：「最近」页点好友只在右侧打开聊天记录，
-        既没有「完成任务」卡片、也没有可点的任务点赞按钮，点顶部点赞图标两次仍是白态；
-        而且 I_CHECK_FRIENDS 在「最近」页不命中，导航会认不出当前页。
-        所以进页面后固定点一次「好友」标签，再用判定素材确认。
+    def _ensure_friends_tab_ready(self) -> bool:
+        """把好友窗口摆到「好友」页签，保证紧接着的 goto_page 能被导航认出来。
 
-        先确认还站在好友界面：羁绊弹窗连点时，最后多出来的那一下有可能落在
-        右上角红 X 上把好友页关掉（落点已尽量避开，见 _dismiss_friendship_popup），
-        真关了就直接重进一次，不能盲点 (186,109) —— 那在庭院是一个无关按钮。
+        为什么必须自己动手（11-18 实机 + 截图实测）：
+        `page_friends` 的判定素材 I_CHECK_FRIENDS 是左下角的**两个小纸人**，只在
+        「好友」页签出现；好友窗口停在「最近」页签时那块是空木纹 —— 拿 18:41 的
+        卡死截图实测只有 **0.0379**（阈值 0.8），全图搜索最高 0.57，说明整屏都没有
+        这个图标，不是 ROI 偏几个像素能救的。
+        一旦页签被带到「最近」，`goto_page(page_friends)` 就退化成
+        「点庭院好友入口 → 认不出 → 点红X返回 → 再点入口」的死循环，6 轮后被设备层
+        防连点拦成 GameTooManyClickError，整个任务重启。11-18 config 4 因此卡死 9 次
+        （含 18:52 关闭点赞之后的 19:05 / 19:13 / 19:16 / 19:49 四次），首发失败全部
+        紧跟「打完觉醒协战回庭院」或「切到停在最近页签的账号」。
+
+        「最近」页签下点好友只在右侧打开聊天记录（11-09 实测 16416）：没有「完成任务」
+        卡片、也没有能点的点赞按钮，点顶部点赞图标两次仍是白态 —— 所以不是「认出来就
+        能用」，必须切回「好友」才继续。
+
+        不改上游 page_friends（那要动 tasks/GameUi），这里自己走一遍：
+        回庭院 → 点好友入口 → 认出「最近」→ 点 C_FRIENDS_TAB 切回 → I_CHECK_FRIENDS 复核。
+
+        Returns:
+            True 表示现在站在「好友」页签，紧接着 goto_page(page_friends) 能过；
+            False 表示两轮都没摆正，调用方**必须放弃进好友页**，不能硬 goto。
         """
+        for attempt in range(1, self.FRIENDS_TAB_READY_TRIES + 1):
+            self.screenshot()
+            if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+                logger.info(
+                    '好友页签已就位（第 %d/%d 轮判定）',
+                    attempt, self.FRIENDS_TAB_READY_TRIES,
+                )
+                return True
+            # 站在庭院就一定不在好友窗口，省掉一次约 1 秒的列表全量 OCR。
+            # 不在庭院时才去认「最近」，避免每号每轮白花 2 秒。
+            in_window = (
+                False if self.appear(GameUiAssets.I_CHECK_MAIN)
+                else self._in_friends_window()
+            )
+            if not in_window:
+                # 不在好友窗口：在庭院点入口。若屏幕还在探索/协战等页，底部导航没有
+                # 好友入口，素材不会命中，必须先回庭院。
+                if not self.appear(GameUiAssets.I_CHECK_MAIN):
+                    logger.info('既不在庭院也不在好友窗口，先回主界面再点好友入口')
+                    try:
+                        self.goto_page(page_main)
+                    except RequestHumanTakeover:
+                        raise
+                    except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as error:
+                        logger.warning('回主界面失败，无法自愈好友页签: %r', error)
+                        self.device.click_record_clear()
+                        return False
+                    self.screenshot()
+                if not self.appear_then_click(GameUiAssets.I_MAIN_GOTO_FRIENDS):
+                    logger.warning(
+                        '庭院底部没找到好友入口（第 %d/%d 轮），自愈失败',
+                        attempt, self.FRIENDS_TAB_READY_TRIES,
+                    )
+                    return False
+                sleep(self.FRIENDS_WINDOW_OPEN_WAIT)
+                self._dismiss_friendship_popup('自愈打开好友页时')
+                self.screenshot()
+                if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+                    logger.info('点好友入口后直接落在「好友」页签')
+                    return True
+                if not self._in_friends_window():
+                    logger.warning('点了好友入口但仍认不出好友界面（第 %d 轮）', attempt)
+                    continue
+            # 人到好友窗口了，但不在「好友」页签（游戏记住了上次的「最近」）
+            x, y = self.C_FRIENDS_TAB.coord()
+            logger.info(
+                '好友窗口停在非「好友」页签（「最近」下判定素材仅 0.04），'
+                '点 (%d,%d) 切回：第 %d/%d 轮',
+                x, y, attempt, self.FRIENDS_TAB_READY_TRIES,
+            )
+            self.device.click(x, y, control_name=self.C_FRIENDS_TAB.name)
+            self.device.click_record_clear()
+            sleep(self.FRIEND_LIKE_GROUP_SWITCH_SETTLE)
+        # 最后一轮点完没再判过，补一帧，避免「刚好点成功」被记成失败
         self.screenshot()
         if self.appear(GameUiAssets.I_CHECK_FRIENDS):
+            logger.info('最后一轮点击后好友页签已就位')
             return True
-        if not self._in_friends_window():
-            logger.warning('已不在好友界面（可能被弹窗连点误触右上角红X关掉），重新进入一次')
-            try:
-                self.goto_page(page_friends)
-            except RequestHumanTakeover:
-                raise
-            except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as error:
-                logger.warning('重进好友界面失败，本号跳过点赞: %r', error)
-                self.device.click_record_clear()
-                return False
-            self._dismiss_friendship_popup('重新进入好友页时')
-        x, y = self.C_FRIENDS_TAB.coord()
-        logger.info('好友页不在「好友」标签（可能在最近页），点固定位置 (%d,%d) 切回', x, y)
-        self.device.click(x, y, control_name=self.C_FRIENDS_TAB.name)
-        self.device.click_record_clear()
-        sleep(self.FRIEND_LIKE_GROUP_SWITCH_SETTLE)
-        self.screenshot()
-        if self.appear(GameUiAssets.I_CHECK_FRIENDS):
-            logger.info('已切回「好友」标签，后续点赞才能生效')
-            return True
-        logger.warning('点「好友」标签后仍认不出好友列表，本号跳过点赞')
+        logger.warning(
+            '「好友」页签自愈失败（%d 轮），放弃进好友页 —— 继续 goto 会踩死循环',
+            self.FRIENDS_TAB_READY_TRIES,
+        )
         return False
 
     def _friend_like_state(self) -> str:
@@ -1617,24 +1694,15 @@ class ScriptTask(
         if not names:
             logger.warning('「给指定好友点赞」已开启，但好友名列表是空的')
             return False
-        try:
-            # 「最近」标签页也算站在好友界面，否则 goto_page 认不出当前页会空转
-            if not self._in_friends_window():
-                self.goto_page(page_friends)
-        except RequestHumanTakeover:
-            # 需要人工介入的一律往上抛，别吞
-            raise
-        except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as error:
-            # 上游范本 KekkaiUtilize:655；导航失败只是本号不点赞，不能打断协战
-            logger.warning('进入好友界面失败，跳过点赞: %r', error)
-            self.device.click_record_clear()
+        # 进好友页 + 摆正「好友」页签合成一次自愈。以前是「先 _in_friends_window 判，
+        # 不行就 goto_page(page_friends)」—— 只要页签停在「最近」，goto 本身就会死循环，
+        # except 拦不住（异常在被吞之前已经把点击记录打满），所以必须自己点入口。
+        if not self._ensure_friends_tab_ready():
+            logger.warning('好友页签没能摆正，本号跳过点赞')
             return False
         # 进好友页时游戏可能先弹「好友羁绊提升」遮罩（离线期间好友给你点赞/送礼），
-        # 不关掉的话接下来的列表 OCR 全读到弹窗文字；关掉后再固定点「好友」标签，
-        # 确保停在「好友」列表而不是「最近」（最近页点好友只出聊天记录，点赞无效）
+        # 不关掉的话接下来的列表 OCR 全读到弹窗文字
         self._dismiss_friendship_popup('进入好友页时')
-        if not self._ensure_friends_tab():
-            return False
 
         pending = set(names)
         # 进好友页时展开的可能是任意一组（16416 实测跨区展开），且各组各自保存滚动位置。
@@ -1793,7 +1861,22 @@ class ScriptTask(
         return None
 
     def get_assist_battle_count(self):
-        """获取当前账号剩余的协战次数。"""
+        """获取当前账号剩余的协战次数。
+
+        进页面前先把「好友」页签摆正：page_assist_battle 的唯一入口是
+        page_main -> page_friends -> page_assist_battle，好友窗口停在「最近」时
+        page_friends 认不出来，goto_page 会反复点好友入口/返回直到 GameTooManyClickError。
+        （11-18 config 4 卡死 9 次全是这一条，详见 _ensure_friends_tab_ready）
+
+        Returns:
+            (觉醒次数, 结界突破次数)；自愈失败时返回 (None, None)，由调用方降级。
+        """
+        if not self._ensure_friends_tab_ready():
+            logger.warning(
+                '好友页签自愈失败，本轮不读协战次数 —— 硬 goto_page(page_assist_battle) '
+                '会反复点好友入口和返回，最终 GameTooManyClickError 让整个任务重启'
+            )
+            return None, None
         self.goto_page(page_assist_battle)
         # 切换界面可能卡顿等个动画
         sleep(0.5)
