@@ -2,14 +2,29 @@
 # 帮指定好友砸百鬼夜行（邀请好友同行）
 #
 # 只给 tasks/Hyakkiyakou/script_task.py 用，ScriptTask 通过多继承拿到这些方法。
-# 素材全部复用 HyakkiyakouAssets 里现成的，一张图都没有新采集：
+# 素材全部复用 HyakkiyakouAssets 里现成的，只在新版邀请界面上补了一个列表 ROI：
 #   I_HINVITE            打开「邀请好友」弹窗
 #   I_CHECK_INVITATION   弹窗是否开着（关闭判据 = 它消失）
-#   I_FRIEND_SAME_1/2    「好友」页签 未选中 / 选中
-#   I_FRIEND_REMOTE_1/2  「跨区」页签 未选中 / 选中
-#   O_HELP_TICKET        右下角百鬼券数量      （本次新增）
-#   O_HELP_LIST          好友列表 OCR 区       （本次新增）
-#   S_HELP_LIST_SCROLL   列表上滑 / BACK 回顶  （本次新增，只是坐标，无图片）
+#   I_FRIEND_SAME_1/2    「好友」页签 未选中 / 选中（旧版）
+#   I_FRIEND_REMOTE_1/2  「跨区」页签 未选中 / 选中（旧版）
+#   *_RECALL             同一套页签的新版坐标（上游为星聚回归活动加的，11-18 起成为正式界面）
+#   O_HELP_TICKET        右下角百鬼券数量
+#   O_HELP_LIST          好友列表 OCR 区（旧版）
+#   O_HELP_LIST_RECALL   好友列表 OCR 区（新版，11-18 新增）
+#   O_HELP_TIP           活动提示弹窗 OCR 区（11-18 新增）
+#   S_HELP_LIST_SCROLL   列表上滑 / BACK 回顶  （只是坐标，无图片）
+#
+# 11-18 起游戏换成新版邀请界面（星聚回归版），和旧版三处不同，所以两套都要能跑：
+#   1. 页签整体左移：新版 好友 x182 / 寮友 x276 / 跨区 x367，旧版 x390 / x490 / x580；
+#   2. 弹窗变小变左：新版 x128~735 / y118~604，旧版 x340~955 / y130~560；
+#   3. 新版右侧多一块「推荐星重聚阴阳师」面板（x764 起），里面有几个玩家名，
+#      旧列表 ROI（x370~940）会把它圈进来当成好友去点 —— 所以新版必须换窄 ROI。
+# 判哪一版的依据是两套页签素材的 roi_back 互不重叠（新版 x269~428，旧版 x521~641），
+# 谁命中就是哪版，见 _help_sync_layout。
+#
+# 另外从灯笼进百鬼夜行后**可能**先弹一个活动说明框（正文 + 「点击任意位置继续」），
+# 它会把「邀请好友」的第一次点击吃掉（点谁都是关它），于是弹窗打不开、整趟白跑。
+# 所以在进页面时和点击失败后各加一次 _help_dismiss_tip。
 #
 # 和手动操作的对照：
 #   主界面 → 点「邀请好友」 → 切「好友」/「跨区」页签 → 按名单点好友
@@ -131,9 +146,26 @@ class HelpFriendTask:
     HELP_IGNORE_TOKENS = ('好友', '寮友', '跨区', '搜索', '请输入好友昵称或备注搜索', '请输人好发昵称或备注搜索')
     # 纯数字 / 百分号 / 括号 / 度这类是「最近受邀」旁边的人数标记，不是名字
     HELP_NOISE_PATTERN = re.compile(r'^[\d\s.,%％°()（）]+$')
-    # 邀请弹窗外的蒙层。实测弹窗亮区是 x340-955 / y130-560，四个角外都是
-    # 亮度 20 左右的纯蒙层，左下角这一块没有主界面按钮，点它关弹窗最安全。
+    # 邀请弹窗外的蒙层。实测旧弹窗亮区是 x340-955 / y130-560、新弹窗是 x128-735 /
+    # y118-604，四个角外都是蒙层，左下角这一块没有主界面按钮，点它关弹窗最安全
+    # （11-18 在新版弹窗上实测：(100,400) 一按即关）。
     HELP_BLANK_POINTS = ((100, 400), (640, 60), (1180, 400))
+
+    # ---- 活动提示弹窗（11-18 新增） ---------------------------------------------
+    # 从灯笼进百鬼夜行后可能先弹一个活动说明框，底部是「点击任意位置继续」。
+    # 正文每次活动都换，只有这句提示语稳定，所以按文案判（O_HELP_TIP 只扫中下部那条带）。
+    HELP_TIP_KEYWORD = '任意位置'
+    # 点弹窗内部靠上的位置，不点底部（底部偶尔是「确定/前往」这类真按钮）。
+    HELP_TIP_CLICK = (640, 350)
+    # 最多点几次。正常一次就没了，留 3 次给「点了但弹窗重画」的情况。
+    HELP_TIP_MAX = 3
+
+    # ---- 已选同行者时打开邀请弹窗（11-18 新增） ---------------------------------
+    # 左下角有两种状态：没选人就是「邀请好友 +」（I_HINVITE 命中，中心 170,612）；
+    # 已经选好同行者就变成「头像 + 名字」（16416 实测 I_HINVITE 最高只 0.71，匹配不到）。
+    # 上一趟中途退出 / 崩溃会把同行者留在场上，这时不补一次点击就再也打不开弹窗。
+    # 点头像同样能打开邀请弹窗，落点取这个格子的中上部，两种状态下都落在可点区域。
+    HELP_COMPANION_SLOT = (159, 575)
 
     # ------------------------------------------------------------------ 基础读写
 
@@ -154,14 +186,59 @@ class HelpFriendTask:
             logger.warning(f'帮砸：百鬼券数量识别结果异常 [{raw}]')
             return -1
 
+    # ------------------------------------------------------------------ 界面版本
+
+    def _help_sync_layout(self) -> str:
+        """判这一次的邀请界面是新版还是旧版，结果缓存到 self._help_ui_layout。
+
+        两套页签素材的 roi_back 互不重叠（新版 x269~428，旧版 x521~641），
+        所以谁命中就是哪版，不需要看分数谁高。**必须在弹窗打开后调用**：
+        页签只在弹窗里才能匹配到。
+        """
+        layout = getattr(self, '_help_ui_layout', None)
+        if layout:
+            return layout
+        if self.appear(self.I_FRIEND_REMOTE_1_RECALL):
+            layout = 'recall'
+            logger.info('帮砸：邀请界面 = 新版（星聚回归版），用新版页签与列表区')
+        elif self.appear(self.I_FRIEND_REMOTE_1):
+            layout = 'classic'
+            logger.info('帮砸：邀请界面 = 旧版，用旧版页签与列表区')
+        else:
+            # 两套页签都没命中时的兜底：I_CHECK_INVITATION 是弹窗里那句
+            # 「好友参与会获得碎片奖励并且提高击中几率」，旧版在 x629、新版在 x456
+            # （同一个模板、只是位置不同），所以看上次命中落点就能分开两版。
+            x = self.I_CHECK_INVITATION.roi_front[0]
+            layout = 'recall' if x < 550 else 'classic'
+            logger.warning(
+                f'帮砸：新旧两套页签素材都没命中，按提示语落点 x={x} 判为{layout}，'
+                f'（新版/旧版分界 550，若切页签失效请检查素材）'
+            )
+        self._help_ui_layout = layout
+        return layout
+
+    def _help_list_rule(self):
+        """当前界面该用哪个好友列表 OCR 区。"""
+        if getattr(self, '_help_ui_layout', None) == 'recall':
+            return self.O_HELP_LIST_RECALL
+        return self.O_HELP_LIST
+
+    def _help_tab_rule(self, label: str):
+        """当前界面「好友」/「跨区」页签的可点素材。"""
+        recall = getattr(self, '_help_ui_layout', None) == 'recall'
+        if label == '好友':
+            return self.I_FRIEND_SAME_1_RECALL if recall else self.I_FRIEND_SAME_1
+        return self.I_FRIEND_REMOTE_1_RECALL if recall else self.I_FRIEND_REMOTE_1
+
     def _help_list_ocr(self) -> list:
         """OCR 好友列表，返回 [(文字, 全屏x, 全屏y)]，已过滤人数标记和固定文案。"""
         self.screenshot()
-        roi = self.O_HELP_LIST.roi
+        rule = self._help_list_rule()
+        roi = rule.roi
         ox, oy = roi[0], roi[1]
         items = []
         try:
-            results = self.O_HELP_LIST.detect_and_ocr(self.device.image)
+            results = rule.detect_and_ocr(self.device.image)
         except Exception as e:
             logger.warning(f'帮砸：好友列表 OCR 异常 {e}')
             return items
@@ -385,29 +462,127 @@ class HelpFriendTask:
             prev = cur
         logger.warning(f'帮砸：「{label}」{action}达到上限 {limit} 次，按当前位置继续')
 
+    @staticmethod
+    def _help_variants(text: str) -> list:
+        """把 OCR 文本再给出「去掉首尾 1 个字符」的候选写法，只用于匹配。
+
+        为什么需要：卡片里名字左边紧贴着一个式神小立绘，OCR 会把图案读成字母，
+        实测跨区好友「solomon」被读成「xsolomon」（11-18 真机截图）。
+        只给 ASCII 首尾字符开这个口子，中文名不去首字 —— 中文少一个字常常是另一个名字。
+        长度不足 4 的不处理，避免「ab」和「b」这种误配。
+        """
+        out = [text]
+        if len(text) < 4:
+            return out
+        if text[0].isascii():
+            out.append(text[1:])
+        if text[-1].isascii():
+            out.append(text[:-1])
+        return out
+
     def _help_find(self, items: list, pending: list):
-        """在 OCR 结果里找待处理好友。先精确匹配，再退一步做包含匹配（容忍 OCR 少字/多字）。"""
+        """在 OCR 结果里找待处理好友。先精确匹配，再退一步做包含匹配（容忍 OCR 少字/多字）。
+
+        每一步都同时试 _help_variants 给出的写法：OCR 粘上的装饰图案（如「xsolomon」）
+        不该让这个好友被跳过。
+        """
         for text, cx, cy in items:
-            if text in pending:
-                return text, cx, cy
+            for cand in self._help_variants(text):
+                if cand in pending:
+                    if cand != text:
+                        logger.info(f'帮砸：OCR 读成 [{text}]，按 [{cand}] 匹配待邀请好友')
+                    return cand, cx, cy
         for text, cx, cy in items:
             if len(text) < 2:
                 continue
-            for target in pending:
-                if len(target) >= 2 and (target in text or text in target):
-                    return target, cx, cy
+            for cand in self._help_variants(text):
+                if len(cand) < 2:
+                    continue
+                for target in pending:
+                    if len(target) >= 2 and (target in cand or cand in target):
+                        if cand != text:
+                            logger.info(f'帮砸：OCR 读成 [{text}]，按 [{cand}] 包含匹配 [{target}]')
+                        return target, cx, cy
         return None
 
     # ------------------------------------------------------------------ 弹窗与页签
 
+    def _help_tip_open(self) -> bool:
+        """活动提示弹窗（正文 + 「点击任意位置继续」）是否盖在前面。
+
+        判据是 O_HELP_TIP 那条带里 OCR 到「任意位置」。不用模板匹配，因为正文每次
+        活动都改，模板每周都会失效；「点击任意位置继续」是这类弹窗的固定提示语。
+        OCR 异常按「没有弹窗」处理：宁可漏一次也别把正常流程挡在这里。
+        """
+        self.screenshot()
+        try:
+            results = self.O_HELP_TIP.detect_and_ocr(self.device.image, logDisplay=False)
+        except Exception as e:
+            logger.warning(f'帮砸：提示弹窗 OCR 异常 {e}')
+            return False
+        text = ''.join((r.ocr_text or '') for r in results).replace(' ', '')
+        if self.HELP_TIP_KEYWORD in text:
+            logger.info(f'帮砸：识别到活动提示弹窗（{text[-12:]}）')
+            return True
+        return False
+
+    def _help_dismiss_tip(self) -> bool:
+        """点掉活动提示弹窗。返回 True 表示点完已经不在了（或本来就没有）。
+
+        为什么必须处理：这个弹窗是「点击任意位置继续」，会吃掉「邀请好友」的
+        第一次点击 —— 于是弹窗打不开、日志只报一句「没看到弹窗」、整趟一个都不砸。
+        """
+        for i in range(self.HELP_TIP_MAX):
+            if not self._help_tip_open():
+                return True
+            x, y = self.HELP_TIP_CLICK
+            logger.info(f'帮砸：第 {i + 1} 次点掉活动提示弹窗 @ ({x},{y})')
+            self.device.click(x=x, y=y, control_name='hya_help_tip')
+            time.sleep(1)
+        gone = not self._help_tip_open()
+        if not gone:
+            logger.warning('帮砸：活动提示弹窗点了 3 次还在，后续点击可能都无效')
+        return gone
+
     def _help_popup_open(self) -> bool:
-        """打开「邀请好友」弹窗；已经开着就直接返回。"""
+        """打开「邀请好友」弹窗；已经开着就直接返回。
+
+        左下角有两种状态，入口不一样，先判一下再点：
+        - 没选同行者 → 「邀请好友 +」，走 I_HINVITE（模板匹配）；
+        - 已选同行者 → 「头像 + 名字」，I_HINVITE 匹配不到（16416 实测最高 0.71），
+          点头像同样能打开弹窗，走 HELP_COMPANION_SLOT 兜底。
+          上一趟中途崩溃/退出会把同行者留在场上，不兜底就再也打不开弹窗。
+        """
         if self.appear(self.I_CHECK_INVITATION):
             return True
+        # 活动提示弹窗是「点击任意位置继续」，会吃掉第一次点击，先清掉再动
+        self._help_dismiss_tip()
+
+        self.screenshot()
+        if not self.appear(self.I_HINVITE):
+            x, y = self.HELP_COMPANION_SLOT
+            logger.info(f'帮砸：左下角不是「邀请好友 +」，按已选同行者处理，点头像 @ ({x},{y})')
+            self.device.click(x=x, y=y, control_name='hya_help_companion')
+            time.sleep(1)
+            self.screenshot()
+            if self.appear(self.I_CHECK_INVITATION):
+                logger.info('帮砸：点同行者头像打开了邀请弹窗')
+                return True
+            logger.warning('帮砸：点同行者头像后没看到弹窗')
+            return False
+
         self.ui_click(self.I_HINVITE, self.I_CHECK_INVITATION, interval=2)
         self.screenshot()
         if self.appear(self.I_CHECK_INVITATION):
             logger.info('帮砸：已打开邀请好友弹窗')
+            return True
+        # 第一次点击可能还是被提示弹窗吃掉了（点哪儿都算「继续」），清一次再补点
+        logger.info('帮砸：第一次点「邀请好友」没弹出窗口，清一次提示弹窗后重点')
+        self._help_dismiss_tip()
+        self.ui_click(self.I_HINVITE, self.I_CHECK_INVITATION, interval=2)
+        self.screenshot()
+        if self.appear(self.I_CHECK_INVITATION):
+            logger.info('帮砸：已打开邀请好友弹窗（第二次点击）')
             return True
         logger.warning('帮砸：点「邀请好友」后没看到弹窗')
         return False
@@ -428,9 +603,23 @@ class HelpFriendTask:
         return False
 
     def _help_tab(self, rule, label: str) -> None:
-        """点一次页签。点已选中的页签没有副作用，所以不需要先判断当前在哪一页。"""
-        x, y, w, h = rule.roi_front
-        logger.info(f'帮砸：切到「{label}」页签 @ ({x + w // 2},{y + h // 2})')
+        """点一次页签。点已选中的页签没有副作用，所以不需要先判断当前在哪一页。
+
+        **点之前先匹配一次**（11-18 加）：RuleImage 匹配成功时会把 roi_front 原地改写
+        成真实落点（module/atom/image.py:201 `_apply_match_result`），所以只要 roi_back
+        覆盖到目标页签，点击就自动落在正确位置 —— 新版界面不需要另写一套点击坐标，
+        旧版切回来也不受影响。匹配不到才退回静态 roi_front（那说明弹窗没开或素材失配，
+        点了多半也没用，留个 warning 方便回头查）。
+        """
+        self.screenshot()
+        if self.appear(rule):
+            x, y, w, h = rule.roi_front
+            where = f'匹配落点 x{x} y{y} w{w} h{h}'
+        else:
+            x, y, w, h = rule.roi_front
+            where = f'未匹配，按静态坐标 x{x} y{y} w{w} h{h}'
+            logger.warning(f'帮砸：「{label}」页签没匹配到，改用静态坐标点击（{where}）')
+        logger.info(f'帮砸：切到「{label}」页签 @ ({x + w // 2},{y + h // 2})  {where}')
         self.device.click(x=x + w // 2, y=y + h // 2, control_name=f'hya_help_tab_{label}')
         time.sleep(0.8)
 
@@ -450,7 +639,7 @@ class HelpFriendTask:
         logger.info(f'帮砸：点了 [{name}] 弹窗没有关闭，判定它今天已被邀请满 {self.HELP_PER_FRIEND} 次，本次跳过')
         return False
 
-    def _help_scan_tab(self, label: str, pending: list, skipped: set, tab_rule):
+    def _help_scan_tab(self, label: str, pending: list, skipped: set):
         """在某个页签里从顶滑到底找待处理好友，找到一个就点掉并返回名字。
 
         :return: 邀请成功的好友名；None 表示这个页签没有可处理的对象了
@@ -460,7 +649,9 @@ class HelpFriendTask:
         if not self._help_popup_open():
             logger.warning(f'帮砸：「{label}」页签打不开邀请弹窗，跳过')
             return None
-        self._help_tab(tab_rule, label)
+        # 页签只在弹窗里才匹配得到，所以版本判定放在弹窗打开之后
+        self._help_sync_layout()
+        self._help_tab(self._help_tab_rule(label), label)
         self._help_scroll_until_still(label, to_bottom=False, limit=self.HELP_TO_TOP_MAX, action='回顶')
 
         prev = self._help_names(self._help_list_ocr())
@@ -562,14 +753,14 @@ class HelpFriendTask:
 
         :return: (好友名, 页签名)；None 表示两份名单都处理完了
         """
-        for label, names, tab_rule in groups:
+        for label, names in groups:
             pending = [
                 n for n in names
                 if n not in skipped and done.get(n, 0) < self.HELP_PER_FRIEND
             ]
             if not pending:
                 continue
-            name = self._help_scan_tab(label, pending, skipped, tab_rule)
+            name = self._help_scan_tab(label, pending, skipped)
             if name is not None:
                 return name, label
         return None
@@ -579,6 +770,8 @@ class HelpFriendTask:
         self.screenshot()
         if self.appear(self.I_CHECK_INVITATION):
             self._help_popup_close()
+        # 收尾时也可能撞上活动提示弹窗，它会把右上角红叉的点击吃掉
+        self._help_dismiss_tip()
         for _ in range(5):
             self.screenshot()
             if not self.appear(self.I_HCLOSE_RED):
@@ -635,6 +828,9 @@ class HelpFriendTask:
             logger.error('帮砸：没能进入百鬼夜行主界面，放弃本次任务')
             raise RequestHumanTakeover('Failed to navigate to Hyakkiyakou page')
 
+        # 进页面可能先弹活动说明框，它会把「邀请好友」的第一次点击吃掉
+        self._help_dismiss_tip()
+
         ticket = self._help_ticket()
         if ticket == 0:
             logger.warning('帮砸：百鬼券数量为 0，本次任务一个都不砸，直接结束')
@@ -648,9 +844,11 @@ class HelpFriendTask:
 
         done: dict = {}
         skipped: set = set()
+        # 界面版本在第一次打开弹窗时判一次就缓存（_help_sync_layout），每趟重置
+        self._help_ui_layout = None
         groups = (
-            ('好友', friend_names, self.I_FRIEND_SAME_1),
-            ('跨区', remote_names, self.I_FRIEND_REMOTE_1),
+            ('好友', friend_names),
+            ('跨区', remote_names),
         )
 
         rounds = 0

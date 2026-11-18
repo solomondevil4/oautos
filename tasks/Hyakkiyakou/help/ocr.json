@@ -15,6 +15,24 @@
     "mode": "Full",
     "method": "Default",
     "keyword": "",
-    "description": "帮砸好友弹窗的好友列表(1280x720 实测：5 行卡片, 行高 84px, 首行文字中心 y=231, 末行 y=565; 下沿必须到 612, 原来只到 560 会把第 5 行整行漏掉)"
+    "description": "帮砸好友弹窗的好友列表(旧版界面, 1280x720 实测：5 行卡片, 行高 84px, 首行文字中心 y=231, 末行 y=565; 下沿必须到 612, 原来只到 560 会把第 5 行整行漏掉)"
+  },
+  {
+    "itemName": "help_list_recall",
+    "roiFront": "130,225,615,360",
+    "roiBack": "130,225,615,360",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "帮砸好友弹窗的好友列表(新版星聚回归界面, 1280x720 实测：弹窗 x128~735/y118~604, 卡片区 y225~585, 两列行高 84px, 首行名字中心 y=260; 右侧推荐面板从 x764 起必须排除)"
+  },
+  {
+    "itemName": "help_tip",
+    "roiFront": "300,260,700,300",
+    "roiBack": "300,260,700,300",
+    "mode": "Full",
+    "method": "Default",
+    "keyword": "",
+    "description": "百鬼夜行活动提示弹窗(含底部「点击任意位置继续」), 判据见 _help_tip_open"
   }
 ]

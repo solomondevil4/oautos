@@ -239,6 +239,15 @@ class HyakkiyakouAssets:
 	# 1280x720 实测：卡片区 y262~590、行高 84px、行文字中心 305/389/475/558。
 	# 下沿必须到 612，原来 (370,215,570,345) 只到 y=560，末行整行读不到。
 	O_HELP_LIST = RuleOcr(roi=(370,200,570,412), area=(370,200,570,412), mode="Full", method="Default", keyword="", name="help_list")
+	# 帮砸好友弹窗的好友列表 —— 新版界面（星聚回归版，11-18 上线）
+	# 1280x720 实测：弹窗 x128~735 / y118~604，卡片区 y225~585，仍是两列、行高 84px，
+	# 首行名字中心 y=260。右侧「推荐星重聚阴阳师」面板从 x764 起，必须排除 ——
+	# 旧 ROI（x370~940）正好把那批推荐人名圈进来，会被当成好友去点。
+	O_HELP_LIST_RECALL = RuleOcr(roi=(130,225,615,360), area=(130,225,615,360), mode="Full", method="Default", keyword="", name="help_list_recall")
+	# 活动提示弹窗（正文 + 底部「点击任意位置继续」）。
+	# 正文每次活动都换，只有那句提示语稳定，所以只 OCR 中下部这条带，
+	# 判据是文案里含「任意位置」，见 help_friend.py 的 _help_tip_open。
+	O_HELP_TIP = RuleOcr(roi=(300,260,700,300), area=(300,260,700,300), mode="Full", method="Default", keyword="", name="help_tip")
 
 
 	# Swipe Rule Assets
