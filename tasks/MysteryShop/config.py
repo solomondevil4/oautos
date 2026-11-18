@@ -61,9 +61,9 @@ class ShopConfig(BaseModel):
     # 留个开关只会让人以为「勾了才比价」，反而是坑。
     buy_coin_item: bool = Field(
         default=False,
-        title='购买金币道具（识别到商店五级 / 弹出金币不足就停止购买金币道具）',
-        description='只用金币标价的道具把神秘商人顶到 5 级。进店先读自己的等级，已经 5 级就整趟不买；\n'
-                    '购买过程中弹出「金币不足」也立刻停手。',
+        title='购买金币道具（商店满 5 级就停买；某件金币不足只跳过那件）',
+        description='看到金币标价的道具就买，用来把神秘商人顶到 5 级。进店先读自己的等级，已经 5 级就整趟不买；\n'
+                    '购买时某一件弹出「金币不足」只跳过这一件，这一屏剩下的金币道具继续买。',
     )
 
     # ---------- 勾玉道具 ----------
@@ -71,7 +71,10 @@ class ShopConfig(BaseModel):
     mystery_amulet: bool = Field(
         default=False,
         title='神秘咒符',
-        description='勾上后买蓝票，标价不高于下面那行才买。',
+        description='勾上后买蓝票，标价不高于下面那行才买。\n'
+                    '只跑一趟：刷新前后两批都当场买。\n'
+                    '跑两趟：第一趟只买刷新前那批，刷新后那批和其它勾玉道具一起，'
+                    '由第二趟跨店比价、回程到最便宜那家买。',
     )
     mystery_amulet_max_price: int = Field(
         default=85,

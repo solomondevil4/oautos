@@ -1830,6 +1830,22 @@ class ScriptTask(
             con.switch_soul_config.enable = True
         self.run_realmraid_core(con)
 
+    def _click_leftmost_reward_box(self) -> bool:
+        """签到奖励可能有多个宝箱, 只点最左边那个。"""
+        matches = self.I_REWARD_BOX.match_all_any(
+            self.device.image, frame_id=self.device.image_frame_id
+        )
+        if not matches:
+            return False
+        # matches: (score, x, y, w, h), x 为匹配框左上角
+        _, x, y, w, h = min(matches, key=lambda m: m[1])
+        self.device.click(
+            x=int(x + w / 2),
+            y=int(y + h / 2),
+            control_name=self.I_REWARD_BOX.name,
+        )
+        return True
+
     def run_sign_act(self):
         """运行签到领式神活动"""
         logger.hr('Run Sign Act', 3)
@@ -1839,7 +1855,7 @@ class ScriptTask(
                 self.screenshot()
                 if self.appear(
                     self.I_REWARD_EXIST, interval=0.8
-                ) and self.appear_then_click(self.I_REWARD_BOX, interval=0.8):
+                ) and self._click_leftmost_reward_box():
                     logger.info('Sign act get reward')
                     sleep(2)
                     continue

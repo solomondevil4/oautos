@@ -477,6 +477,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         # 弹窗卡死标记。run_shop 里靠它判断「这一屏还能不能继续点」，每趟必须清，
         # 否则上一趟卡过一次会让这一趟整趟不买金币道具。
         self.popup_stuck = False
+        # 金币道具的两条日志各只报一次（每屏都会调 buy_coin_items，不掐就会刷屏），
+        # 每趟重置：上一趟满级 / 没勾选，不代表这一趟也一样。
+        self._coin_full_logged = False
+        self._coin_off_logged = False
         # 整只御行达摩推送的去重集合与店面标签也每趟重置：跨趟残留会让下一趟
         # 把「上趟已经推过的那只」当成重复，直接不推。
         self.daruma_push_seen = set()
@@ -488,6 +492,11 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 logger.info(f'MysteryShop: 神秘商人 Lv{self.coin_level}（目标 {self.COIN_MAX_LEVEL} 级）')
             else:
                 logger.warning('MysteryShop: 进店读不到神秘商人等级，本任务不买金币道具')
+        else:
+            # 开关没勾：全程一件金币道具都不买（11-18 用户要求）。
+            # 这条日志在这里打，是因为这种情况下 buy_coin_items 根本不会被调用。
+            self._coin_off_logged = True
+            logger.info('MysteryShop: 未勾选「购买金币道具」，本趟全程不买金币道具')
 
         # 判本次是第几趟。靠配置里记下的「第一趟完成日期」，不看钟点 —— 原因见 _which_pass。
         self.pass_index = self._which_pass()
@@ -568,8 +577,11 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         顺序固定为「先买刷新前那批 -> 分享 -> 刷新 -> 处理刷新后那批 -> 再分享」：
         - 刷新前那批必须先买：花 5 勾玉刷新后它就永久消失，等不到比价结果；
-        - 两趟运行时刷新后那批**只识别不买**（buy_after_refresh=False），留给第二趟
-          逐店比价；只配一趟时没有第二趟来接，所以当场买掉（buy_after_refresh=True）；
+        - 两趟运行时刷新后那批的**勾玉道具**只识别不买（buy_after_refresh=False），
+          留给第二趟逐店比价；**金币道具照买不误**（11-18 用户要求：看到能买就买，
+          金币道具本来就不参与比价，等第二趟没有意义）—— 但前提是勾了
+          「购买金币道具」，不勾就全程一件不买；
+        - 只配一趟时没有第二趟来接，所以刷新后那批当场全买（buy_after_refresh=True）；
         - 两次分享各自对应一个店面，合起来正好 SHARE_MAX=2 次。
 
         好友店一次都不逛 —— 用户要求第一趟只碰自己的店（不点右侧黄箭头）。
@@ -591,13 +603,14 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             logger.info('MysteryShop: 本趟没有刷新成功，到此结束（不逛好友店）')
             return
 
-        # ④ 刷新后：两趟运行时只识别，只配一趟时连买
+        # ④ 刷新后：两趟运行时勾玉道具只识别（留给第二趟比价），金币道具当场买掉
+        #    （是否真买由「购买金币道具」开关决定）；只配一趟时走 run_shop，勾玉和金币都买。
         self.share_worthy = set()
         self.shop_tag = '刷新后'
         if buy_after_refresh:
             self.run_shop(cfg)
         else:
-            self._scan_shop(cfg)
+            self._scan_shop(cfg, buy_coin=True)
 
         # ⑤ 分享第 2 次（刷新后的店面）
         self._share_if_worthy(con, '刷新后')
@@ -1886,9 +1899,22 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         **全程不分享**（用户要求）。第二趟也不刷新：每天的 5 勾玉刷新是第一趟的事，
         这里要的是「直接比较每个商店的价格」，多刷一次只会把已经记过的价格作废。
 
-        **金币道具在记录阶段就地买掉**（`_scan_shop(buy_coin=True)`，每店顶部一屏）：
+        **金币道具在记录阶段就地买掉**（`_scan_shop(buy_coin=True)`，**每一屏**都买，
+        开关「购买金币道具」没勾时一件都不买）：
         它不参与比价，价格固定，早买晚买一样；拖到回程会漏掉「没进 plan 的店」。
-        第一趟刷新出来那批金币格也由此补买 —— 第一趟 ④ 只识别不买。
+        自己店的金币格第一趟 ④ 就已经买过了（11-18 起），这里再扫一遍只会有
+        「已售罄，跳过」，没有副作用；好友店的金币格是这一趟才第一次碰到。
+
+        **神秘咒符（蓝票）11-18 起也进比价池**（用户要求第二趟比价、回程买）：
+        它和达摩 / 太鼓一样按单价（蓝票就是标价）挑最便宜那家，回程走到那家买。
+        但它**不进指纹**（见 _signature），所以对切店自愈的重定位没有任何影响；
+        回程下单时按 read_dialog 复核「总价 ÷ 数量」，点过「最大」也再核一次上限。
+
+        **蓝票全局只买一件，不是图省事，是游戏机制决定的**（11-18 用户确认）：
+        一家店的蓝票最多 3 张，下单时点「最大」就一次买完这家的量；而买完之后
+        别的店的蓝票也就买不了了 —— 等于一天只能在「买哪一家」里挑一个，压根没有
+        「每家都买」这个选项。所以 _pick_cheapest 按 (种类, 片数) 全局只留最便宜的
+        那一条，正好是唯一可行且最优的做法，不要改成「逐家买光」。
         """
         cfg = con.shop_config
         catalogs = []
@@ -1935,14 +1961,18 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         把当前这家店从顶部扫到底，识别整店的道具清单。
 
-        buy_coin=True 时，回顶之后先买一遍**金币道具**再开始记录。
-        为什么金币道具要在这里买（第二趟专用）：
+        buy_coin=True 时，**每一屏都先买一遍金币道具**，再记录这一屏的勾玉道具
+        （11-18 起从「只在顶部买一次」改成每屏都买：金币格可能在第二、三屏，
+        只买顶部一屏会漏）。**但实际买不买还看「购买金币道具」这个勾选** ——
+        调用方给的 buy_coin 只是「这条路允许买」，开关没勾时 buy_coin_items
+        自己会直接返回 0（11-18 用户要求：不勾就全程一件不买）。
+        金币道具为什么在这条路上买：
           - 它不参与跨店比价（价格是固定档，越比越亏时间），`_scan_screen` 也不会把它
             放进 items，买它不会污染 catalogs；
-          - 它只能用顶部 8 格的固定坐标识别（I_MS_COIN_1..8 / C_MS_ITEM_1..8），
-            所以必须放在 _scroll_to_top() 成功之后、下滑之前；
-          - 第一趟刷新出来那批金币格没人买（第一趟 ④ 只识别不买），第二趟自己店
-            这一趟正好补上，好友店的金币格也一并处理。
+          - 它按屏幕 8 个固定格位识别（I_MS_COIN_1..8 / C_MS_ITEM_1..8），
+            跟商品内容无关，所以每一屏都能判；
+          - `run_shop._buy_screen` 本来就是每屏买，这里是给「只识别不买」的路径
+            （两趟·第一趟刷新后 / 第二趟扫店）补上金币这一项。
         11-04 的回归就是这里漏了：拆两趟时旧代码「好友店走 run_shop」被换成
         _scan_shop，金币道具整条路断掉，好友店摆着金币道具也不买（douji1 实测）。
         """
@@ -1951,7 +1981,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         if not self._scroll_to_top():
             logger.error('MysteryShop: [比价] 回不到顶部，本店记录为空')
             return []
-        if buy_coin:
+        # 开关没勾时直接跳过，连截图判格都不做（buy_coin_items 里还有一道同样的判定）
+        coin_on = bool(buy_coin) and bool(getattr(cfg, 'buy_coin_item', False))
+        if coin_on:
             self.buy_coin_items(cfg)
         page = self._scan_screen(cfg)
         for it in page:
@@ -1964,6 +1996,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             if not self._recover_shop():
                 logger.error('MysteryShop: [比价] 下滑后离开商店页，本店记录中断')
                 break
+            if coin_on:
+                # 下滑后的屏同样可能摆着金币道具（11-18）
+                self.buy_coin_items(cfg)
             page = self._scan_screen(cfg)
             for it in page:
                 it['page'] = i + 2
@@ -2491,10 +2526,11 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             items += got
             for it in got:
                 self._mark_worthy(it['kind'], it['price'], it['unit'], cfg)
-        # 神秘咒符（蓝票）不参与比价（价格固定、每个商店都是同一档），所以不进 items，
-        # 只单独打一条识别日志 —— 不然用户看不出这一屏到底有没有刷出蓝票。
-        # lines 复用上面那份，售罄的蓝票格在这里被剔掉，不会进分享判据。
-        self._log_amulet(image, lines, cfg)
+        # 神秘咒符（蓝票）从 11-18 起**也进 items**：第二趟要参与跨店比价、回程到
+        # 最便宜那家买（用户 11-18 要求）。以前它只打一条识别日志，理由「每店同价、
+        # 没必要绕路」—— 现在用户宁可绕路也要拿到便宜那张。
+        # lines 复用上面那份，售罄的蓝票格在这里被剔掉：既不进比价池，也不进分享判据。
+        items += self._scan_amulet(image, lines, cfg)
         return items
 
     def _mark_worthy(self, kind: str, price: int, unit: float, cfg) -> None:
@@ -2521,17 +2557,26 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         if 0 < value <= cap:
             self.share_worthy = set(self.share_worthy) | {kind}
 
-    def _log_amulet(self, image, lines=None, cfg=None) -> None:
+    def _scan_amulet(self, image, lines=None, cfg=None) -> list:
         """
-        把这一屏识别到的「神秘咒符」（蓝票）和标价打进日志，并记进分享判据。
+        识别这一屏的「神秘咒符」（蓝票）：打一条识别日志、记进分享判据，
+        **并返回比价用的条目**（11-18 起参与第二趟跨店比价）。
 
-        只报数、不参与跨店比价：蓝票价格每个商店都是同一档，没必要为了它多绕一家店。
-        但买入仍按标价卡上限（见 buy_amulet_screen），所以这里读的价和真正买单时
-        用的是同一个偏移。
+        返回结构与 _scan_image_items 完全一致，另加 'read_dialog': True ——
+        蓝票确认框带「- 1 +」数量调节，价格显示的是这一单的总价，
+        _buy_at 必须按 单价 = 总价 / 数量 复核，否则点了「最大」之后会拿
+        3 倍总价去跟单份上限比，把便宜货误判成超限。
+
+        为什么指纹里要剔掉它（见 _signature）：蓝票**价格确实不固定**（实测 70 / 80 / 90
+        三档），但它在指纹里不稳定 —— 有的店根本没刷出蓝票、售罄格会被 _cell_buyable
+        剔掉、回程买走之后这格也会消失，同一家店在不同时刻的指纹因此对不上；
+        而价格只有三个档位，撞价概率高、区分力弱。把一个「时有时无又弱区分」的元素
+        放进指纹，只会把各家店的 Jaccard 相似度一起抬高、把本来能分清的店推成并列，
+        重定位就会认错店。所以：**能比价、不参与定位**。
 
         **售罄格要剔掉**：蓝票格「剩余购买次数」可以是 0，那时价格牌还在、模板照样
         命中，报一句「90 勾玉」会让人以为能买（10-31 真机就是这个现象）。
-        已售罄的也不进 share_worthy —— 分享出去好友也买不了。
+        已售罄的既不进比价池，也不进 share_worthy —— 分享出去好友也买不了。
 
         lines 由调用方（_scan_screen）传进来复用，省一次全屏模板匹配；单独调用时
         会自动算。
@@ -2562,16 +2607,28 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             ax, ay = x, y + h
             price = self._price_in_box(
                 image, [ax + self.BLUE_PRICE_DX, ay + self.BLUE_PRICE_DY, 44, 30])
-            hits.append((ax, ay, price))
+            hits.append((ax, ay, price, h))
         tail = f'（另有 {sold_out} 个已售罄，跳过）' if sold_out else ''
         if not hits:
             logger.info('MysteryShop: [识别] 本屏没有可买的神秘咒符' + tail)
-            return
-        parts = [f'{p} 勾玉' if p > 0 else '标价未读到' for _, _, p in hits]
+            return []
+        parts = [f'{p} 勾玉' if p > 0 else '标价未读到' for _, _, p, _ in hits]
         logger.info(f'MysteryShop: [识别] 本屏神秘咒符 {len(hits)} 个：' + '、'.join(parts) + tail)
-        for _, _, price in hits:
-            if price > 0:
-                self._mark_worthy('神秘咒符', price, float(price), cfg)
+        items = []
+        for ax, ay, price, h in hits:
+            if price <= 0:
+                # 读不到标价就**不进比价池**：按 0 勾玉买是不可能的，宁可漏这一格，
+                # 也不让它以「最便宜」的身份赢下比价、回程却下不了单。
+                logger.info(f'MysteryShop: [识别] 神秘咒符({ax},{ay}) 标价读不到，不进比价池')
+                continue
+            self._mark_worthy('神秘咒符', price, float(price), cfg)
+            items.append({'kind': '神秘咒符', 'price': price, 'qty': 1, 'unit': float(price),
+                          'ax': ax, 'ay': ay, 'tmpl_h': h, 'click': self.BLUE_CLICK,
+                          # 两份确认框模板都给全（老式 / 新式），少一份就会「弹窗开着却报
+                          # 没弹」，回程白跑一趟 —— 与达摩碎片、太鼓同一个道理。
+                          'check': (self.I_MS_CHECK_BLUE, self.I_MS_CHECK_BLUE_NEW),
+                          'read_dialog': True})
+        return items
 
     def _scan_image_items(self, image, lines, rule, price_dx: int, price_dy: int, min_score: float,
                           click, check, label: str) -> list:
@@ -2639,6 +2696,13 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
             '御行达摩': cfg.black_daruma_max_price if cfg.black_daruma else -1,
             '三星太鼓': cfg.kaiko_3_max_price if cfg.shop_kaiko_3 else -1,
             '四星太鼓': cfg.kaiko_4_max_price if cfg.shop_kaiko_4 else -1,
+            # 神秘咒符（蓝票）11-18 起也进比价池：用户要求第二趟比价、回程到最便宜那家买。
+            # 开关沿用「勾上神秘咒符才买」，上限也沿用同一个数值，与第一趟 buy_amulet_screen
+            # 的判据完全一致 —— 没勾的话这里给 -1，蓝票就跟没进池一样。
+            # 它**天然只会出一条**，和 (种类, 片数) 的全局去重正好对上：一家店的蓝票
+            # 最多 3 张、点「最大」一次买完，买完之后别的店也买不了了（11-18 用户确认），
+            # 所以「每家都买」在游戏里不存在，只挑最便宜那一家就是最优解。
+            '神秘咒符': cfg.mystery_amulet_max_price if cfg.mystery_amulet else -1,
         }
         best = {}
         # 用 getattr 兜底：这里只做「读」，万一实例没经过 run()（比如被当成工具类直接调用），
@@ -2706,6 +2770,15 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         out = set()
         for it in items:
+            # **蓝票不进指纹**（11-18 加）：它现在参与比价、会出现在 items 里，但它在
+            # 指纹里**不稳定** —— 有的店没刷出蓝票、售罄格被 _cell_buyable 剔掉、
+            # 回程买走后这格也消失，同一家店在不同时刻的指纹就对不上；价格又只有
+            # 70/80/90 三档（实测），撞价概率高、区分力弱。这种「时有时无又弱区分」
+            # 的元素留在指纹里，只会把各家店的 Jaccard 相似度一起抬高、把本来一眼
+            # 能分开的两家店推成并列，重定位时就可能认错店（代价是在错的店里找货、
+            # 白跑一趟）。指纹只认稳定又能区分店面的道具：达摩碎片 / 整只 / 两张太鼓。
+            if it['kind'] == '神秘咒符':
+                continue
             if page is not None and it.get('page', 1) != page:
                 continue
             out.add((it['kind'], it['qty'], int(round(it['unit']))))
@@ -2867,8 +2940,18 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         A 店第 3 格的坐标拿到 B 店就是另一件商品。所以按「同类 + 同片数 + 单价相同」
         重新匹配 —— 片数必须一起比：1 片装和 2 片装常常同单价（48 与 96），
         只比单价会把 2 片装的格子当成 1 片装买走，另一种片数就漏了。
+
+        **神秘咒符（蓝票）走同一条通道**（11-18 加）：它的确认框带「- 1 +」数量调节，
+        所以按条目自带的 read_dialog 走「总价 ÷ 数量 复核单价」，并把配置上限当 cap
+        传进去 —— 点了「最大」一次买满之后，也要再核一次单份价有没有超上限。
+
+        蓝票的「最大」= 把这家店剩余的张数（最多 3 张）一次买完，买完之后别的店也
+        买不了了（见 _run_pass2）。所以这条通道只会为蓝票跑 **一次**，不存在「逐家买」。
         """
         label = it['kind']
+        # 蓝票是唯一需要「确认框里复算单价」的比价道具：其它四种都没有数量调节器。
+        # cap 只在 read_dialog / 点过「最大」之后生效，非蓝票传 0 = 不做这道复核。
+        cap = cfg.mystery_amulet_max_price if label == '神秘咒符' else 0
         if not self._scroll_to_top():
             logger.warning(f'MysteryShop: [比价] {label} 回不到顶部，放弃购买')
             return 0
@@ -2882,7 +2965,8 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                     continue
                 if self._buy_at(cand['ax'], cand['ay'], cand['tmpl_h'],
                                 cand['click'], cand['check'], label, cand['qty'],
-                                cand['price'], cand['unit']):
+                                cand['price'], cand['unit'],
+                                read_dialog=bool(cand.get('read_dialog')), cap=cap):
                     self.device.click_record_clear()
                     return 1
             if page >= self.SCROLL_DOWN_MAX:
@@ -3121,32 +3205,61 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
     def buy_coin_items(self, shop_config: ShopConfig = None):
         """
-        买金币标价的道具，用来把神秘商人等级顶上去。
+        买当前这一屏的金币标价道具，用来把神秘商人等级顶上去。
 
         等级开关由 run() 进店时读的那一次决定（自己的商店页），这里不再重读：
         好友商店里买金币道具同样能提升等级，所以这个值对每个商店都有效；
         而好友页显示的等级是分享者的，读了只会干扰判断。
+
+        **「购买金币道具」这个勾选是唯一闸门**（11-18 用户要求）：不勾就全程一件不买，
+        不管从哪条路调进来（`run_shop._buy_screen` / `_scan_shop`）。
+        以前没勾选时只是靠 `coin_level=0` 间接挡住 —— 那是「没读等级」的副作用，
+        不是判据，哪天 coin_level 的来源一改就会漏买。所以这里显式判一次。
+
+        **11-18 起每屏都会调一次**（`run_shop._buy_screen` 本来每屏就调，
+        `_scan_shop` 也从这时改成每屏调），所以几条早退日志要克制：
+        「未勾选」「已达 5 级」整个任务只报一次，否则每屏都刷同一行。
+
+        **金币不足只跳过当前格**（11-18 用户要求）：同一家店每格价格不同，
+        这格买不起不代表下一格买不起，继续往后试。
         """
+        if shop_config is None:
+            # 兜底：调用方没传配置时自己取，取不到就当没勾选处理（宁可少买，不可乱买）
+            try:
+                shop_config = self.config.mystery_shop.shop_config
+            except Exception:
+                logger.debug('MysteryShop: 取不到商店配置，跳过金币道具')
+                return 0
+        if not getattr(shop_config, 'buy_coin_item', False):
+            if not getattr(self, '_coin_off_logged', False):
+                self._coin_off_logged = True
+                logger.info('MysteryShop: 未勾选「购买金币道具」，本趟全程不买金币道具')
+            return 0
+
         max_level = self.COIN_MAX_LEVEL
         level = getattr(self, 'coin_level', 0)
         if level <= 0:
             logger.debug('MysteryShop: 没有可用的神秘商人等级，跳过金币道具')
             return 0
         if level >= max_level:
-            logger.info(f'MysteryShop: 神秘商人 Lv{level} 已达目标 {max_level} 级，本任务不买金币道具')
+            if not getattr(self, '_coin_full_logged', False):
+                self._coin_full_logged = True
+                logger.info(f'MysteryShop: 神秘商人 Lv{level} 已达目标 {max_level} 级，'
+                            f'本任务不买金币道具')
+            return 0
+
+        # 只扫当前这一屏：多屏的遍历由调用方负责，这里不自己滑动
+        coins = self._coin_slots()
+        if not coins:
+            logger.debug('MysteryShop: 当前屏没有金币道具，跳过')
             return 0
 
         logger.hr('Buy coin items', 3)
-        # 只扫当前这一屏：两屏的遍历由 run_shop() 负责，这里不自己滑动
-        coins = self._coin_slots()
-        if not coins:
-            logger.info('MysteryShop: 当前屏没有金币道具，跳过')
-            return 0
-
         bought = 0
         self.popup_stuck = False
-        self.coin_shortage = False
         for index in coins:
+            # 每格开头重置：上一格的金币不足只代表那一格，不能连累下一格（11-18）
+            self.coin_shortage = False
             left = self._left_times(index)
             if left is None:
                 logger.warning(f'MysteryShop: 第{index}格剩余次数读不到，跳过')
@@ -3164,9 +3277,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 logger.warning('MysteryShop: 弹窗关不掉，本商店剩下的格子不再买')
                 break
             if self.coin_shortage:
-                # 金币不足：这个号换不出更多金币，后面每一格都会卡同一个窗口，直接结束
-                logger.warning('MysteryShop: 金币不足，本商店剩下的金币格不再尝试')
-                break
+                # 只跳过这一格：继续看后面的金币格（也许更便宜，买得起）
+                logger.warning(f'MysteryShop: 第{index}格金币不足，跳过这一格，'
+                               f'继续看后面的金币格')
+                continue
 
         logger.info(f'MysteryShop: 本屏金币道具购买 {bought} 件（进店时 Lv{level}）')
         return bought
@@ -3195,7 +3309,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         """
         点开第 index 格并买下 1 个。成功判据是「出现了获得奖励」。
         没出现就关弹窗，绝不在同一格反复点：
-        - 出现「购买金币」（金币不足）窗口 → 点右上角 X 关掉，并中止本商店剩余金币格；
+        - 出现「购买金币」（金币不足）窗口 → 点右上角 X 关掉，**只跳过这一格**
+          （11-18 用户要求：不能因为一件买不起就放弃整家店的金币道具，
+          便宜的格子也许还买得起）；
         - 出现「已达上限」弹窗 → 点确定继续买（见 _limit_continue），不算失败、继续等奖励；
         - 其他情况 → 点弹窗左侧空白关掉。
 
@@ -3231,9 +3347,11 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
                 got_reward = True
                 break
             # 金币不足会弹出「购买金币」窗口。这个窗口点左侧空白关不掉，必须点右上角 X；
-            # 而且它的出现说明这个号的勾玉换不成金币，继续买剩下的格子毫无意义，直接收工。
+            # 关掉之后**只跳过这一格**（11-18 用户要求）—— 同一家店里每格价格不同，
+            # 这格买不起不代表下一格也买不起。弹窗关不掉时由 popup_stuck 兜底收手。
             if self.appear(self.I_MS_NO_COIN):
-                logger.warning(f'MysteryShop: 第{index}格金币不足，关闭「购买金币」窗口，本次金币购买结束')
+                logger.warning(f'MysteryShop: 第{index}格金币不足，关闭「购买金币」窗口，'
+                               f'跳过这一格')
                 if not self.close_coin_popup():
                     # X 都点不掉 => 窗口还盖在商品上，后续任何点击都不可信
                     self.popup_stuck = True
