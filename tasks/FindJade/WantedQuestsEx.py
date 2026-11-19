@@ -1,5 +1,6 @@
 from time import sleep
 
+from module.exception import TaskEnd
 from module.logger import logger
 from tasks.WantedQuests.config import CooperationSelectMask, CooperationType, WantedQuestsConfig
 
@@ -118,20 +119,32 @@ def invite_success_callback(self, ctype: CooperationType, name: str):
         "记录邀请历史: [%s] 类型=%s, %s",
         name, ctype, '现世勾协' if present_world else '普通勾协',
     )
-    # 只给「普通勾协」记额度: 现世勾协同为 Jade 类型(靠现世标记区分), 粮协是 Food 类型,
-    # 两者都不计数 —— 用户要的是「大号收到的普勾」满 N 个就收手。
-    if int(ctype) & int(CooperationType.Jade) and not present_world:
-        remain = self.fade_conf.note_normal_jade_invited()
+    # 普勾和现勾各记一份额度: 两者同为 Jade 类型(靠现世标记区分), 粮协是 Food 类型,
+    # 两种额度都不占。普勾额度满 → 后面只识别不作战; 现勾额度满 → 连现勾也不再邀请。
+    if int(ctype) & int(CooperationType.Jade):
         conf = self.fade_conf.find_jade_config
-        if remain < 0:
-            logger.info("本时段普通勾协已邀请 %s 个（未设上限）", conf.normal_jade_invited)
+        if present_world:
+            remain = self.fade_conf.note_special_jade_invited()
+            if remain < 0:
+                logger.info("本时段现世勾协已邀请 %s 个（未设上限）", conf.special_jade_invited)
+            else:
+                logger.info(
+                    "本时段现世勾协已邀请 %s/%s 个，还剩 %s 个额度",
+                    conf.special_jade_invited,
+                    self.fade_conf.special_jade_limit_effective(),
+                    remain,
+                )
         else:
-            logger.info(
-                "本时段普通勾协已邀请 %s/%s 个，还剩 %s 个额度",
-                conf.normal_jade_invited,
-                self.fade_conf.normal_jade_limit_effective(),
-                remain,
-            )
+            remain = self.fade_conf.note_normal_jade_invited()
+            if remain < 0:
+                logger.info("本时段普通勾协已邀请 %s 个（未设上限）", conf.normal_jade_invited)
+            else:
+                logger.info(
+                    "本时段普通勾协已邀请 %s/%s 个，还剩 %s 个额度",
+                    conf.normal_jade_invited,
+                    self.fade_conf.normal_jade_limit_effective(),
+                    remain,
+                )
     self.config.save()
 
 
@@ -141,6 +154,43 @@ def normal_jade_full(self) -> bool:
     if not conf:
         return False
     return conf.normal_jade_remain() == 0
+
+
+def special_jade_full(self) -> bool:
+    """本时段现勾额度是否已用完; 配置没接上时一律当没上限"""
+    conf = getattr(self, 'fade_conf', None)
+    if not conf:
+        return False
+    return conf.special_jade_remain() == 0
+
+
+def slot_quota_full(self, item) -> bool:
+    """这一格该不该跳过: 普勾看普勾额度, 现勾看现勾额度, 粮协等不限制
+
+    不能像以前那样「普勾满就 break 整段」—— 普勾满的时候现勾往往还有额度,
+    整段 break 会把后面还能接的现勾一起丢掉。
+    """
+    ctype = item.get('type')
+    if ctype is None or not (int(ctype) & int(CooperationType.Jade)):
+        return False
+    if item.get('present_world'):
+        return special_jade_full(self)
+    return normal_jade_full(self)
+
+
+def invite_only(self):
+    """普勾额度已满、现勾还有额度时走这里: 只做邀请, 不打悬赏封印
+
+    上游 run() 把「邀请协作」和「打封印」焊在一起, 这里只复用它前半段
+    pre_work_cooperation_only(), 然后直接 TaskEnd 交回上层继续切下一个号。
+    """
+    logger.info('普通勾协额度已满: 本轮只邀请现世勾协, 不打悬赏封印')
+    ok = self.pre_work_cooperation_only()
+    if not ok:
+        logger.warning('只邀请模式: 悬赏页未打开或本号没有协作格子, 跳过')
+    # 覆写过的 next_run 是空实现, 不会影响 FindJade 自己的调度
+    self.next_run()
+    raise TaskEnd('WantedQuests')
 
 
 def all_cooperation_invite(self, name_all: str = None):
@@ -171,10 +221,14 @@ def all_cooperation_invite(self, name_all: str = None):
                 typeMask,
             )
             break
-        # QUOTA: 额度已满就连同后面的格子一起停, 不再一个个白等 5×5 秒
-        if normal_jade_full(self):
-            logger.info("普通勾协额度已满，停止邀请剩余协作格子")
-            break
+        # QUOTA: 该类型额度满了就跳过这一格。不能像以前那样 break ——
+        # 普勾满的时候后面的格子往往还有现勾, 整段停会把还能接的现勾一起丢掉。
+        if slot_quota_full(self, item):
+            logger.info(
+                "%s 额度已满，跳过该格",
+                '现世勾协' if item.get('present_world') else '普通勾协',
+            )
+            continue
         '''
            尝试5次 如果邀请失败 等待5s 重新尝试
            阴阳师BUG: 好友明明在线 但邀请界面找不到该好友(好友未接受任何协作任务的情况下)

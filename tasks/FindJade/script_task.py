@@ -32,12 +32,15 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
 
         found = []    # 本轮查出有勾协的号 (账号, 类型)
         resumed = []  # 本时段此前已记录、本轮被跳过的号
+        # 普勾额度满了之后不再打悬赏封印(作战), 但后面的号照样切进去识别勾协;
+        # 现勾额度也满了就连邀请都省掉, 只记录。两种状态都继续把名单跑完。
+        scan_only = False
 
         try:
             for accountInfo in self.fade_conf.sup_account_list:
                 # 名单里的大号本时段都接过普勾了, 后面小号再邀请只会白等「好友不在线」重试
-                if self.jade_quota_reached():
-                    break
+                if not scan_only and self.jade_quota_reached():
+                    scan_only = True
                 logger.info("start %s-%s ", accountInfo.character, accountInfo.svr)
                 if not self.is_need_login(accountInfo):
                     logger.warning("%s Skipped last Login Time:%s", accountInfo.character, accountInfo.last_complete_time)
@@ -58,12 +61,26 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
                 logger.info("%s-%s 勾协状态: %s", accountInfo.character, accountInfo.svr, flag)
                 if flag in self.JADE_HAS:
                     found.append((accountInfo, flag))
+                # 普勾额度满 → 不打悬赏封印; 现勾额度也满 → 连邀请都不做, 只留记录。
+                # 两种情况都要把 last_complete_time 写上, 否则本时段每次运行都会重查这些号。
+                if scan_only and self.current_conf().special_jade_remain() == 0:
+                    logger.info(
+                        "%s-%s 普勾和现勾额度都已满，只记录勾协、不邀请不打封印",
+                        accountInfo.character, accountInfo.svr,
+                    )
+                    self.fade_conf.update_account_login_history(accountInfo)
+                    self.save_config()
+                    continue
                 #
                 wq = self.CreatObjectFromModule("WantedQuests", config=self.config, device=self.device)
                 wq.fade_conf = self.fade_conf
 
                 try:
-                    wq.run()
+                    if scan_only:
+                        # 普勾额度已满但现勾还有额度: 只邀请现勾, 不打悬赏封印
+                        wq.invite_only()
+                    else:
+                        wq.run()
                 except TaskEnd as e:
                     logger.warning("%s-%s TaskEnd", accountInfo.character, accountInfo.svr)
                     # 更新配置文件中的时间
@@ -97,7 +114,7 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
         if remain != 0:
             return False
         logger.info(
-            '本时段普通勾协已邀请 %s 个，达到上限 %s，不再处理剩余小号',
+            '本时段普通勾协已邀请 %s 个，达到上限 %s，后续号只识别不打悬赏封印',
             conf.find_jade_config.normal_jade_invited,
             conf.normal_jade_limit_effective(),
         )
@@ -392,8 +409,10 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
             "get_invite_vip_name": WantedQuestsEx.get_invite_vip_name,
             "next_run": WantedQuestsEx.next_run,
             "invite_success_callback": WantedQuestsEx.invite_success_callback,
-            # 普勾额度: 邀请到上限就停手, 不再邀请剩余格子
+            # 普勾额度: 按格子类型分别判额度, 满了就跳过该格
             "all_cooperation_invite": WantedQuestsEx.all_cooperation_invite,
+            # 普勾满了但现勾还有额度时, 只邀请不打封印
+            "invite_only": WantedQuestsEx.invite_only,
             "get_config": WantedQuestsEx.get_config
         })
         # 让覆写的 get_cooperation_info 能调到上游原实现(只补标记, 不复制逻辑)
