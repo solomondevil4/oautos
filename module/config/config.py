@@ -375,24 +375,26 @@ class Config(ConfigState, ConfigManual, ConfigWatcher, ConfigMenu):
         # 只在调用方没有显式传 target 时生效 —— 百鬼棋局 set_next_run_next_monday、
         # 道馆/首领退治等自带 target 的路径自动豁免, 原有逻辑一行不改。
         if target is None and getattr(scheduler, 'weekly_jump_enable', False):
-            try:
-                weekday = int(getattr(scheduler, 'weekly_jump_weekday', 2))
-            except (TypeError, ValueError):
-                weekday = 0
-            if 1 <= weekday <= 7:
+            # weekly_jump_weekday_index 由 Scheduler 提供: 0=周一 ... 6=周日, 非法值 -1。
+            # 这里不 import tasks 里的枚举, 保持 module 层不依赖 tasks 层。
+            weekday = getattr(scheduler, 'weekly_jump_weekday_index', -1)
+            if 0 <= weekday <= 6:
                 # % 7 or 7: 正好落在目标日 -> 跳到 7 天后(每周一次语义),
                 # 否则跳到本周内的目标日(比原时间早也算, 这就是「下周的周几」)
-                days = (weekday - 1 - next_run.weekday()) % 7 or 7
+                days = (weekday - next_run.weekday()) % 7 or 7
                 shifted = next_run + timedelta(days=days)
+                # 目标是中文枚举, 取 .value 避免不同 Python 版本 str() 输出类名
+                label = getattr(scheduler.weekly_jump_weekday, 'value',
+                                scheduler.weekly_jump_weekday)
                 logger.info(
                     f'周跳: {task} 下次运行 {next_run.strftime("%Y-%m-%d %H:%M:%S")}'
                     f' -> {shifted.strftime("%Y-%m-%d %H:%M:%S")}'
-                    f'（目标周{weekday}，+{days} 天）'
+                    f'（目标{label}，+{days} 天）'
                 )
                 next_run = shifted
             else:
                 logger.warning(
-                    f'周跳: {task} 目标周几({weekday})不在 1-7 范围内，本次不跳'
+                    f'周跳: {task} 目标周几({scheduler.weekly_jump_weekday})无效，本次不跳'
                 )
 
         # 将这些连接起来，方便日志输出
