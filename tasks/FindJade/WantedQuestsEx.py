@@ -119,10 +119,10 @@ def invite_success_callback(self, ctype: CooperationType, name: str):
         "记录邀请历史: [%s] 类型=%s, %s",
         name, ctype, '现世勾协' if present_world else '普通勾协',
     )
-    # 普勾和现勾各记一份额度: 两者同为 Jade 类型(靠现世标记区分), 粮协是 Food 类型,
-    # 两种额度都不占。普勾额度满 → 后面只识别不作战; 现勾额度满 → 连现勾也不再邀请。
+    # 三类各记一份额度、互不相占: 普勾/现勾同为 Jade 类型(靠现世标记区分), 粮协是 Food 类型。
+    # 某类满了就只停那一类, 其它类照常邀请和打怪。
+    conf = self.fade_conf.find_jade_config
     if int(ctype) & int(CooperationType.Jade):
-        conf = self.fade_conf.find_jade_config
         if present_world:
             remain = self.fade_conf.note_special_jade_invited()
             if remain < 0:
@@ -145,6 +145,17 @@ def invite_success_callback(self, ctype: CooperationType, name: str):
                     self.fade_conf.normal_jade_limit_effective(),
                     remain,
                 )
+    elif int(ctype) & int(CooperationType.Food):
+        remain = self.fade_conf.note_food_invited()
+        if remain < 0:
+            logger.info("本时段粮协已邀请 %s 个（未设上限）", conf.food_invited)
+        else:
+            logger.info(
+                "本时段粮协已邀请 %s/%s 个，还剩 %s 个额度",
+                conf.food_invited,
+                self.fade_conf.food_limit_effective(),
+                remain,
+            )
     self.config.save()
 
 
@@ -164,18 +175,30 @@ def special_jade_full(self) -> bool:
     return conf.special_jade_remain() == 0
 
 
-def slot_quota_full(self, item) -> bool:
-    """这一格该不该跳过: 普勾看普勾额度, 现勾看现勾额度, 粮协等不限制
+def food_full(self) -> bool:
+    """本时段粮协额度是否已用完; 配置没接上时一律当没上限"""
+    conf = getattr(self, 'fade_conf', None)
+    if not conf:
+        return False
+    return conf.food_remain() == 0
 
-    不能像以前那样「普勾满就 break 整段」—— 普勾满的时候现勾往往还有额度,
-    整段 break 会把后面还能接的现勾一起丢掉。
+
+def slot_quota_full(self, item) -> bool:
+    """这一格该不该跳过: 普勾/现勾/粮协各看各的额度
+
+    哪类满了就只跳过那一类(格子级), 不邀请→不追踪→那一类的怪不会被打;
+    其它类照常。不能「某类满就 break 整段」, 否则后面还能接的其它类一起丢掉。
     """
     ctype = item.get('type')
-    if ctype is None or not (int(ctype) & int(CooperationType.Jade)):
+    if ctype is None:
         return False
-    if item.get('present_world'):
-        return special_jade_full(self)
-    return normal_jade_full(self)
+    if int(ctype) & int(CooperationType.Food):
+        return food_full(self)
+    if int(ctype) & int(CooperationType.Jade):
+        if item.get('present_world'):
+            return special_jade_full(self)
+        return normal_jade_full(self)
+    return False
 
 
 def invite_only(self):
@@ -224,10 +247,14 @@ def all_cooperation_invite(self, name_all: str = None):
         # QUOTA: 该类型额度满了就跳过这一格。不能像以前那样 break ——
         # 普勾满的时候后面的格子往往还有现勾, 整段停会把还能接的现勾一起丢掉。
         if slot_quota_full(self, item):
-            logger.info(
-                "%s 额度已满，跳过该格",
-                '现世勾协' if item.get('present_world') else '普通勾协',
-            )
+            ctype = item.get('type')
+            if ctype is not None and (int(ctype) & int(CooperationType.Food)):
+                quota_name = '粮协'
+            elif item.get('present_world'):
+                quota_name = '现世勾协'
+            else:
+                quota_name = '普通勾协'
+            logger.info("%s 额度已满，跳过该格（这类只认不做）", quota_name)
             continue
         '''
            尝试5次 如果邀请失败 等待5s 重新尝试

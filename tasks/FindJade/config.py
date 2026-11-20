@@ -107,33 +107,30 @@ class FindJadeConfig(ConfigBase):
     # 本时段(5点/18点刷新)已推送过的结果快照, 用来保证「一个时间段算一趟」:
     # 同一时段重启多次, 内容没变就不重发; 查出新勾协才补发一份完整清单。
     jade_push_state: str = Field(default='', description='脚本自动维护的推送快照')
-    # ---------- 普通勾协邀请上限 ----------
-    # 大号能挂的协作数量有限, 名单里的大号本时段都接过普勾之后, 后面的小号再邀请
-    # 只会撞上「名单里所有好友本时段都已接过」, 每个格子白重试 5 次 × 5 秒。
-    # 累计邀请成功的「普通勾协」达到这个数就停止「作战」(不再打悬赏封印),
-    # 后面的号仍然切进去识别勾协并一起推送。
-    # 只数普勾: 现世勾协(同样是 Jade 类型, 靠现世标记区分)单独计数, 粮协两种都不算。
+    # ---------- 协作额度: 每类接到 N 个后, 这类就只认不做 ----------
+    # 大号能挂的协作有限, 名单里的大号本时段都接过后, 后面的小号再邀请只会白等
+    # 「好友不在线」。普勾/现勾/粮协各算各的、互不相占: 某类满了就只停那一类,
+    # 其它类照常邀请和打怪。三类都满了才整个跳过协作。
     normal_jade_limit: int = Field(
         default=-1,
         ge=-1,
-        title='普通勾协邀请到 N 个，后续就只识别',
-        description='只数「普通勾协」，现世勾协和粮协都不计数。\n'
-                    '-1 = 自动：等于邀请名单里的大号数量（每个大号各 1 个）\n'
-                    '0 = 不限制（老行为，一直切完所有小号）\n'
-                    '正整数 = 指定的总数量\n'
-                    '达到后：后续号照样切进去识别勾协并一起推送，只是不再打悬赏封印；'
-                    '现世勾协额度（= 大号数量）还没满时会继续只邀请、不打封印。\n'
-                    '按游戏 5:00 / 18:00 刷新时段累计，同一时段重启不会重复计数。',
+        title='每种协作接到 N 个后，只认不做',
+        description='普勾、现勾、粮协各算各的：某类接满 N 个后，这类就只认不做'
+                    '（不邀请、不打怪），不影响其它类。\n'
+                    '-1 = 按大号数量自动算（推荐）；0 = 不限；正数 = 自己定。\n'
+                    '按游戏 5 点 / 18 点刷新重新算，同一时段重启不会重复计数。',
     )
-    # 本时段已邀请成功的普通勾协数 + 计数所属时段(如 2026-11-12-PM), 跨时段自动归零
-    normal_jade_invited: int = Field(default=0, description='脚本自动维护的普通勾协计数')
-    normal_jade_cycle: str = Field(default='', description='脚本自动维护的计数时段')
-    # 现世勾协单独一份计数: 每个大号每时段能各接 1 个普勾和 1 个现勾,
-    # 所以现勾额度恒等于大号数量; 现勾不占普勾额度, 也不受 normal_jade_limit 影响。
-    special_jade_invited: int = Field(default=0, description='脚本自动维护的现世勾协计数')
-    special_jade_cycle: str = Field(default='', description='脚本自动维护的现世勾协计数时段')
-    hide_fields = dynamic_hide('jade_push_state', 'normal_jade_invited', 'normal_jade_cycle',
-                               'special_jade_invited', 'special_jade_cycle')
+    # 各类本时段已邀请数 + 所属时段(如 2026-11-12-PM), 跨时段自动归零
+    normal_jade_invited: int = Field(default=0, description='脚本维护：普勾计数')
+    normal_jade_cycle: str = Field(default='', description='脚本维护：普勾计数时段')
+    special_jade_invited: int = Field(default=0, description='脚本维护：现勾计数')
+    special_jade_cycle: str = Field(default='', description='脚本维护：现勾计数时段')
+    food_invited: int = Field(default=0, description='脚本维护：粮协计数')
+    food_cycle: str = Field(default='', description='脚本维护：粮协计数时段')
+    hide_fields = dynamic_hide('jade_push_state',
+                               'normal_jade_invited', 'normal_jade_cycle',
+                               'special_jade_invited', 'special_jade_cycle',
+                               'food_invited', 'food_cycle')
 
 
 class FindJade(ConfigBase):
@@ -224,6 +221,31 @@ class FindJade(ConfigBase):
             conf.special_jade_invited = 0
         conf.special_jade_invited += 1
         return self.special_jade_remain(now)
+
+    def food_limit_effective(self) -> int:
+        """粮协上限: 与普勾共用 normal_jade_limit(-1 = 大号数量, 0 = 不限制)"""
+        return self.normal_jade_limit_effective()
+
+    def food_remain(self, now: datetime = None) -> int:
+        """本时段还能邀请几个粮协; -1 = 不限制, 0 = 已达上限"""
+        limit = self.food_limit_effective()
+        if limit <= 0:
+            return -1
+        conf = self.find_jade_config
+        if conf.food_cycle != self.jade_cycle_key(now or datetime.now()):
+            return limit
+        return max(0, limit - conf.food_invited)
+
+    def note_food_invited(self, now: datetime = None) -> int:
+        """记一次「粮协邀请成功」, 返回记完后的剩余额度(-1 = 不限制)"""
+        conf = self.find_jade_config
+        now = now or datetime.now()
+        cycle = self.jade_cycle_key(now)
+        if conf.food_cycle != cycle:
+            conf.food_cycle = cycle
+            conf.food_invited = 0
+        conf.food_invited += 1
+        return self.food_remain(now)
 
     def get_invite_name(self, ctype: CooperationType, present_world: bool = False):
         for info in self.invite_info_list:

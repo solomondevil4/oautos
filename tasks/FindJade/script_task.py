@@ -32,15 +32,11 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
 
         found = []    # 本轮查出有勾协的号 (账号, 类型)
         resumed = []  # 本时段此前已记录、本轮被跳过的号
-        # 普勾额度满了之后不再打悬赏封印(作战), 但后面的号照样切进去识别勾协;
-        # 现勾额度也满了就连邀请都省掉, 只记录。两种状态都继续把名单跑完。
-        scan_only = False
+        # 三类额度(普勾/现勾/粮协)各算各的: 哪类满了就在格子里跳过那一类,
+        # 不邀请→不追踪→那一类的怪不会被打, 其它类照常。三类全满才整个跳过协作。
 
         try:
             for accountInfo in self.fade_conf.sup_account_list:
-                # 名单里的大号本时段都接过普勾了, 后面小号再邀请只会白等「好友不在线」重试
-                if not scan_only and self.jade_quota_reached():
-                    scan_only = True
                 logger.info("start %s-%s ", accountInfo.character, accountInfo.svr)
                 if not self.is_need_login(accountInfo):
                     logger.warning("%s Skipped last Login Time:%s", accountInfo.character, accountInfo.last_complete_time)
@@ -61,26 +57,23 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
                 logger.info("%s-%s 勾协状态: %s", accountInfo.character, accountInfo.svr, flag)
                 if flag in self.JADE_HAS:
                     found.append((accountInfo, flag))
-                # 普勾额度满 → 不打悬赏封印; 现勾额度也满 → 连邀请都不做, 只留记录。
-                # 两种情况都要把 last_complete_time 写上, 否则本时段每次运行都会重查这些号。
-                if scan_only and self.current_conf().special_jade_remain() == 0:
+                # 三类额度全满 → 这个号没有任何协作要做了, 连 WQ 都不用跑;
+                # 只把 last_complete_time 写上, 否则本时段每次运行都会重查这些号。
+                if self.all_quota_full():
                     logger.info(
-                        "%s-%s 普勾和现勾额度都已满，只记录勾协、不邀请不打封印",
+                        "%s-%s 普勾/现勾/粮协额度都已满，只记录勾协、不做协作",
                         accountInfo.character, accountInfo.svr,
                     )
                     self.fade_conf.update_account_login_history(accountInfo)
                     self.save_config()
                     continue
-                #
+                # 统一走上游 run(): 每类满额由格子级 slot_quota_full 单独跳过,
+                # 不满的类别照常邀请+追踪+打怪, 互不干扰。
                 wq = self.CreatObjectFromModule("WantedQuests", config=self.config, device=self.device)
                 wq.fade_conf = self.fade_conf
 
                 try:
-                    if scan_only:
-                        # 普勾额度已满但现勾还有额度: 只邀请现勾, 不打悬赏封印
-                        wq.invite_only()
-                    else:
-                        wq.run()
+                    wq.run()
                 except TaskEnd as e:
                     logger.warning("%s-%s TaskEnd", accountInfo.character, accountInfo.svr)
                     # 更新配置文件中的时间
@@ -102,23 +95,22 @@ class ScriptTask(GameUi, FindJadeAssets, AssistBattleAssets):
         self.next_run("FindJade", success=True)
         raise TaskEnd("FindJade")
 
-    def jade_quota_reached(self) -> bool:
-        """本时段的普通勾协额度是不是已经用完
+    def all_quota_full(self) -> bool:
+        """普勾/现勾/粮协三类额度是否全部用完
 
-        额度按游戏 5:00 / 18:00 刷新时段累计(不是每次运行清零), 所以同一时段重启
-        不会重新给一遍额度。normal_jade_limit = -1 时额度等于名单里的大号数量,
-        0 表示不限制。
+        只有三类全满, 这个号才彻底没有协作可做(连邀请都省掉)。
+        只要还有一类没满, 就照常跑 WQ —— 满了的那类由格子级 slot_quota_full 跳过,
+        没满的类别照常邀请+追踪+打怪。
         """
         conf = self.current_conf()
-        remain = conf.normal_jade_remain()
-        if remain != 0:
-            return False
-        logger.info(
-            '本时段普通勾协已邀请 %s 个，达到上限 %s，后续号只识别不打悬赏封印',
-            conf.find_jade_config.normal_jade_invited,
-            conf.normal_jade_limit_effective(),
-        )
-        return True
+        full = conf.normal_jade_remain() == 0 and conf.special_jade_remain() == 0 and conf.food_remain() == 0
+        if full:
+            c = conf.find_jade_config
+            logger.info(
+                '本时段三类额度全满(普勾 %s、现勾 %s、粮协 %s)，本号不做协作',
+                c.normal_jade_invited, c.special_jade_invited, c.food_invited,
+            )
+        return full
 
     def detect_jade(self) -> str:
         """切号后看悬赏封印有没有勾协, 返回 无勾/普勾/现勾/普勾+现勾/未知"""
