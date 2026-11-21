@@ -182,6 +182,17 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 真角标（含整体压暗到最大通道值仅 101 的那张）读 "2"，分数 0.980~0.989。
     # 中间是空的，0.6 两边都安全。价格 0.86~0.99，同样够用。
     OCR_MIN_SCORE = 0.6
+    # 片数角标专用阈值，比价格严得多。
+    # 11-21 实机事故：1 片卡（本来没有角标）在滚动到贴顶栏那一帧，锚点上偏约 10px，
+    # 片数 ROI 切进达摩脸的白色图案，读成 "3"、分数 0.663~0.681 —— 刚过 0.6，
+    # 于是 48 勾玉被算成 3 片、单价 16，差点当便宜货买下去。
+    # 实测分布（1 片卡 420+ 点网格扫描 + 46 张历史截图）：
+    #   真角标 0.947~0.983（含整格压暗、售罄变暗）；真 3 片 0.972。
+    #   1 片无角标：正常 0.157，ROI 抖 ±6px 最高 0.479，向上偏时最高 0.752。
+    # 0.85 距两侧各约 0.10 间隙，两边都不挨着。
+    # 价格读取不跟着抬（干扰源不同，抬了会把正常价签读崩），仍用 OCR_MIN_SCORE。
+    # 失败方向也安全：真角标掉到 0.85 以下只会计成 1 片 → 单价偏高 → 不买，不多花勾玉。
+    QTY_MIN_SCORE = 0.85
     # 单片数量上限，超过说明读错了，一律按 1 片算
     QTY_MAX = 9
     # 价格上限，超过说明读到的是金币标价（五位数），按读不到处理
@@ -1298,12 +1309,17 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
 
         这里不用 ocr()：Digit 模式在 0.3~0.6 之间有一条「结果里含数字就放行」的挽救分支
         （module/ocr/base_ocr.py:201），无角标时达摩脸会被读成 "3" 放进来，直接
-        54/3=18 当成便宜货买下去。改成自己取原始分数，低于 0.6 一律当没有角标。
+        54/3=18 当成便宜货买下去。改成自己取原始分数，低于 QTY_MIN_SCORE 一律当没有角标。
         """
         roi = [ax + self.QTY_DX, ay + self.QTY_DY] + list(self.O_MS_QTY.roi[2:])
         self.O_MS_QTY.roi = roi
         text, score = self.O_MS_QTY.model.ocr_single_line(self.O_MS_QTY.crop(image, roi))
-        if score < self.OCR_MIN_SCORE:
+        if score < self.QTY_MIN_SCORE:
+            # 0.6~0.85 这段是「像数字但不够确信」，实际来源基本都是锚点被顶栏遮挡、
+            # ROI 切进达摩脸白图案（11-21 那次 0.68 的 "3"）。留一行日志便于回查。
+            if score >= self.OCR_MIN_SCORE:
+                logger.info(f'MysteryShop: 片数读数 {text!r} 置信度 {score:.3f} < {self.QTY_MIN_SCORE}, '
+                            f'按 1 片处理 (格子 ax={ax}, ay={ay})')
             return 1
         qty = self.O_MS_QTY.after_process(text)
         if not isinstance(qty, int) or qty < 1 or qty > self.QTY_MAX:
