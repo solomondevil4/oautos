@@ -193,6 +193,9 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
     # 价格读取不跟着抬（干扰源不同，抬了会把正常价签读崩），仍用 OCR_MIN_SCORE。
     # 失败方向也安全：真角标掉到 0.85 以下只会计成 1 片 → 单价偏高 → 不买，不多花勾玉。
     QTY_MIN_SCORE = 0.85
+    # 片数 >1 时换一帧复核的间隔（秒）。实测滑动刚结束那一帧会尖峰，第二帧就回落，
+    # 0.15s 足够让残影消失，又不至于拖慢买货流程（只有 2/3 片卡才会走这一步）。
+    QTY_CONFIRM_DELAY = 0.15
     # 单片数量上限，超过说明读错了，一律按 1 片算
     QTY_MAX = 9
     # 价格上限，超过说明读到的是金币标价（五位数），按读不到处理
@@ -1107,6 +1110,10 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         for ax, ay in positions:
             for _ in range(self.HEISUI_BUY_MAX):
                 qty = self._heisui_qty(image, ax, ay)
+                # 片数 >1 时换一帧复核（见 _heisui_qty_confirm 的说明）。
+                # 这里拿到的是新截图，价格/身份仍用本轮的 image，画面静止时两者一致。
+                if qty > 1:
+                    qty = self._heisui_qty_confirm(ax, ay, qty)
                 price = self._price_in_box(
                     image, [ax + self.PRICE_DX, ay + self.PRICE_DY] + list(self.O_MS_PRICE.roi[2:]),
                     max_price=price_max)
@@ -1325,6 +1332,28 @@ class ScriptTask(FriendshipPoints, MysteryShopAssets, GeneralInvite):
         if not isinstance(qty, int) or qty < 1 or qty > self.QTY_MAX:
             return 1
         return qty
+
+    def _heisui_qty_confirm(self, ax: int, ay: int, first: int) -> int:
+        """
+        片数 >1 时换一帧复核：两次读数一致才采信，否则按 1 片。
+
+        为什么需要（11-21 在 16480 真机实测）：1 片卡在**滑动刚结束那一帧**，片数 ROI
+        里的像素还是残影/动画状态，OCR 分数会从平常的 0.15~0.27 尖峰到 0.69~0.70，
+        旧 0.6 阈值直接判 3 片（事故现场 0.681，就是这一帧）。同一格在 61 帧里只有
+        滑动后第一帧会尖峰，第二帧立刻回落，所以「换一帧再读」是最直接的判据。
+        模板匹配分数挡不住这条路（误判帧 0.9857，正常帧 0.9784~0.9932，分不开）。
+
+        QTY_MIN_SCORE=0.85 是第一道防线，这里是第二道：尖峰上限无法靠采样穷举。
+        失败方向安全 —— 一致才采信，不一致一律按 1 片（单价偏高 → 不买）。
+        """
+        self.device.sleep(self.QTY_CONFIRM_DELAY)
+        self.screenshot()
+        second = self._heisui_qty(self.device.image, ax, ay)
+        if second == first:
+            return first
+        logger.warning(f'MysteryShop: 达摩({ax},{ay}) 片数两次读数不一致 '
+                       f'({first} 片 / {second} 片)，按 1 片处理')
+        return 1
 
     def _price_in_box(self, image, roi, max_price: int = None, rule=None) -> int:
         """
