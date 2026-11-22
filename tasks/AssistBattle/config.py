@@ -160,6 +160,11 @@ class AssistBattleDailyConfig(BaseModel):
         default=True,
         description='直接完成普通勾协后续只需邀请',
     )
+    jade_execute_count: int = Field(
+        default=0,
+        ge=0,
+        description='普通勾协执行次数上限：只完成前 N 个普通勾协，0=不限制；现世勾协不需要完成，不计入',
+    )
     kekkaiutilize_enable: bool = Field(
         default=False,
         description='按结界蹭卡设置执行',

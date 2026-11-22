@@ -713,6 +713,8 @@ class ScriptTask(MallNavbar, Summon, DailyTriflesAssets):
             if self.appear_then_click(self.I_ENTER_DAILY, interval=1):
                 continue
         self.appear_then_click(self.I_ONE_COMPLETE, interval=1)
+        # 一键完成后可能乱弹浮层, 挡住返回导致页面识别不到而反复点返回,
+        self.device.click_record_clear()
         self.goto_page(page_main)
         self.config.daily_trifles.done_record.courtyard_affairs_dt = datetime.now()
 

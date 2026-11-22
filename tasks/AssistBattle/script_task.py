@@ -561,6 +561,30 @@ class ScriptTask(
         # 本周期还没确认过(初始 none 或中断), 显示未知以区别于真正的无勾
         return self.FIND_JADE_UNKNOWN
 
+    def count_done_jade(self) -> int:
+        """统计已经完成过普勾的账号数
+
+        一个角色只会有一个勾协, 所以"完成的次数"就是状态为普勾的账号数。
+        只算有效时间内的(勾协每 5/18 点刷新, 跨周期的不算),
+        断点续跑时前面跑过的账号状态已经记下来了, 自然会被算进去。
+        """
+        now = datetime.now()
+        refresh_point = self._jade_refresh_point(now)
+        count = 0
+        for account in self.conf.account_list or []:
+            if account.jade_status != self.FIND_JADE_NORMAL:
+                continue
+            if account.jade_complete_time <= refresh_point:
+                continue
+            count += 1
+        return count
+
+    def jade_limit_reached(self, jade_limit: int) -> bool:
+        """勾协执行次数是否已经用满(用满后打开悬赏面板标记完就直接退出)"""
+        if jade_limit <= 0:
+            return False
+        return self.count_done_jade() >= jade_limit
+
     def is_account_done_today(self, account) -> bool:
         """联合判定: 协战按 0 点、勾协按 5/18 点各看各的时间戳, 都完成才跳过
 
@@ -805,11 +829,19 @@ class ScriptTask(
         # 寻找勾协
         if self.conf.daily_config.find_jade_enable:
             jade_flag = self.find_jade()
-            if (
-                jade_flag == self.FIND_JADE_NORMAL
-                and self.conf.daily_config.find_jade_finish_enable
+            jade_limit = self.conf.daily_config.jade_execute_count
+            if jade_flag == self.FIND_JADE_NORMAL and (
+                self.conf.daily_config.find_jade_finish_enable
+                and not self.jade_limit_reached(jade_limit)
             ):
                 self.run_own_wanted_quests()
+            elif jade_flag == self.FIND_JADE_NORMAL:
+                # 次数够了, 相当于没开"顺带完成协作任务": 标记完有勾协就直接退出
+                logger.info(
+                    '勾协已完成 %s 个, 达到上限 %s, 只标记不执行',
+                    self.count_done_jade(),
+                    jade_limit,
+                )
             self.ui_click_until_disappear(self.I_UI_BACK_RED, interval=1)
             self.goto_page(page_main)
             # 页面打开过才算确认(未知 = 没打开, 不记, 下轮重查)
