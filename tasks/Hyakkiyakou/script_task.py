@@ -15,6 +15,12 @@ from oashya.utils import draw_tracks
 from module.exception import TaskEnd
 from module.logger import logger
 from module.exception import RequestHumanTakeover
+from module.exception import (
+    GamePageUnknownError,
+    GameStuckError,
+    GameTooManyClickError,
+)
+from tasks.Component.FriendLike.friend_like import FriendLike
 from tasks.Component.SwitchOnmyoji.switch_onmyoji import SwitchOnmyoji
 from tasks.GameUi.game_ui import GameUi
 from tasks.GameUi.page import page_hyakkiyakou, page_main, page_onmyodo
@@ -25,11 +31,63 @@ from tasks.Hyakkiyakou.help_friend import HelpFriendTask
 from module.hyakkiyakou import Debugger
 
 
-class ScriptTask(GameUi, HyaSlave, SwitchOnmyoji, HelpFriendTask):
+class ScriptTask(GameUi, HyaSlave, SwitchOnmyoji, HelpFriendTask, FriendLike):
 
     @property
     def _config(self):
         return self.config.hyakkiyakou
+
+    @property
+    def friend_like_names_v(self) -> list[str]:
+        """给 FriendLike 组件用：百鬼夜行自己那份「要点赞的好友名」。
+
+        刻意不复用帮砸的两份名单：想点赞的人和想帮砸的人未必相同，
+        绑在一起会让「券不够没帮砸的好友」连带漏掉点赞。
+        """
+        return self._config.hyakkiyakou_config.hya_like_names_v
+
+    def run_friend_like_at_main(self) -> None:
+        """百鬼夜行收尾后给指定好友点赞：从庭院出发、点完回庭院，绝不打断收尾。
+
+        为什么必须先回庭院（而不是直接在百鬼夜行界面 goto 好友页）：
+        好友入口在庭院底部，其它页面上没有这个按钮；另外一键协战 11-18 踩过的坑是
+        打完任务直接进好友页，而好友窗口若停在「最近」页签，`goto_page(page_friends)`
+        会退化成「点入口 → 认不出 → 点红X → 再点入口」的死循环，6 轮后被设备层防连点
+        拦成 GameTooManyClickError，整个任务重启。`FriendLike.run_friend_like`
+        第一步就是 `_ensure_friends_tab_ready()` 自愈，所以这里只要保证「人在庭院」。
+
+        任何失败都只打 warning：点赞是附加需求，不能让它把百鬼夜行的收尾搞砸。
+        """
+        if not self._config.hyakkiyakou_config.hya_like_enable:
+            return
+        if not self.friend_like_names_v:
+            logger.warning('百鬼夜行「给指定好友点赞」已开启，但好友名列表是空的，跳过')
+            return
+        logger.hr('百鬼夜行结束 · 给指定好友点赞', 2)
+        try:
+            self.goto_page(page_main)
+        except RequestHumanTakeover:
+            raise
+        except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as e:
+            logger.warning('点赞前回庭院失败（%r），本次跳过点赞', e)
+            self.device.click_record_clear()
+            return
+        try:
+            self.run_friend_like()
+        except RequestHumanTakeover:
+            raise
+        except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as e:
+            logger.warning('好友点赞执行异常，跳过并清理点击记录: %r', e)
+            self.device.click_record_clear()
+        finally:
+            # 回庭院失败也不能把异常冒出去，否则 set_next_run / TaskEnd 都跑不到
+            try:
+                self.goto_page(page_main)
+            except RequestHumanTakeover:
+                raise
+            except (GamePageUnknownError, GameStuckError, GameTooManyClickError) as e:
+                logger.warning('点赞后回庭院失败，交给后续任务自行导航: %r', e)
+                self.device.click_record_clear()
 
     @cached_property
     def tracker(self) -> Tracker:
@@ -142,6 +200,10 @@ class ScriptTask(GameUi, HyaSlave, SwitchOnmyoji, HelpFriendTask):
             if self.appear(self.I_HCLOSE_RED):
                 break
         self.ui_click_until_disappear(self.I_HCLOSE_RED)
+        # 点赞放在「关掉百鬼夜行界面」之后：此时人还在百鬼夜行主界面或已回庭院，
+        # run_friend_like_at_main 会先确保站到庭院（好友入口只在庭院底部），
+        # 点完再回庭院，不影响下面的 set_next_run 与 TaskEnd。
+        self.run_friend_like_at_main()
         self.set_next_run(task='Hyakkiyakou', success=True, finish=False)
         raise TaskEnd
 

@@ -835,6 +835,8 @@ class HelpFriendTask:
         if ticket == 0:
             logger.warning('帮砸：百鬼券数量为 0，本次任务一个都不砸，直接结束')
             self._help_finish()
+            # 券为 0 也要点赞：点赞与百鬼券无关，用户开了开关就是想点
+            self.run_friend_like_at_main()
             self.set_next_run(task='Hyakkiyakou', success=True, finish=True)
             raise TaskEnd
         if ticket >= 0:
@@ -878,5 +880,7 @@ class HelpFriendTask:
             f'{[f"{k}×{v}" for k, v in done.items()]}；跳过 {len(skipped)} 个 {sorted(skipped)}'
         )
         self._help_finish()
+        # 帮砸正常跑完：名单都处理完了，回庭院后给点赞名单里的好友点赞
+        self.run_friend_like_at_main()
         self.set_next_run(task='Hyakkiyakou', success=True, finish=True)
         raise TaskEnd

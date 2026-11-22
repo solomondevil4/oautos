@@ -76,6 +76,33 @@ class HyakkiyakouConfig(ConfigBase):
         '按「好友数 × 每人每天 3 次」估算即可，名单跑完会自动结束。',
     )
 
+    # ---------------- 给指定好友点赞 ----------------
+    # 跑完百鬼夜行（含「仅帮指定好友砸」模式）回到庭院后，再进好友界面点赞。
+    # 实现与一键协战共用 tasks/Component/FriendLike，两边行为完全一致。
+    hya_like_enable: bool = Field(
+        default=False,
+        title='给指定好友点赞',
+        description='百鬼夜行跑完、回到庭院后，进好友界面给下面名单里的好友点赞。\n'
+        '已经点过（橙黄色）的自动跳过；好友组找不到会再去「跨区好友」找一遍，'
+        '都没有就跳过，不影响百鬼夜行本身。\n'
+        '同区、跨区各自完整扫一遍（每区最多 200 个 ID），不需要把好友置顶。',
+    )
+    hya_like_names: MultiLine = Field(
+        default='',
+        title='要点赞的好友名',
+        description='每行一个好友名，空行自动忽略，最多 200 人（超出的会截断并记日志）。'
+        '程序会在点进好友后用聊天区名字再核对一次，防止点错人。',
+    )
+
+    @property
+    def hya_like_names_v(self) -> list[str]:
+        """多行好友名 -> 列表（与帮砸名单同款写法）"""
+        return [
+            line.strip()
+            for line in self.hya_like_names.split('\n')
+            if line.strip()
+        ]
+
     @property
     def hya_help_friend_names_v(self) -> list[str]:
         """多行好友名 -> 列表（与 AssistBattle 点赞名单同款写法）"""

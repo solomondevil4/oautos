@@ -58,6 +58,8 @@
   "hya_help_friend_names": "同区好友名单",
   "hya_help_remote_names": "跨区好友名单",
   "hya_help_max_round": "最多帮砸局数",
+  "hya_like_enable": "给指定好友点赞",
+  "hya_like_names": "要点赞的好友名",
   "leader_config": "队长所在配置",
   "member_list": "小号名单（队长填）",
   "switch_wait": "换号等待",
