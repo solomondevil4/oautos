@@ -574,16 +574,12 @@ class ScriptTask(
         return self.FIND_JADE_UNKNOWN
 
     def count_done_jade(self) -> int:
-        """统计已经完成过普勾的账号数
-
-        一个角色只会有一个勾协, 所以"完成的次数"就是状态为普勾的账号数。
-        只算有效时间内的(勾协每 5/18 点刷新, 跨周期的不算),
-        断点续跑时前面跑过的账号状态已经记下来了, 自然会被算进去。
-        """
-        now = datetime.now()
-        refresh_point = self._jade_refresh_point(now)
+        """统计已经完成过普勾的账号数, 只算本周期(5/18 点刷新)内的"""
+        # 必须从 self.config.model 取: 悬赏子流程 set_next_run 会触发 reload
+        # 替换整个 model, run() 里绑定的 self.conf 会陈旧, 看不到本轮写入的标记
         count = 0
-        for account in self.conf.account_list or []:
+        refresh_point = self._jade_refresh_point(datetime.now())
+        for account in self.config.model.assist_battle.account_list or []:
             if account.jade_status != self.FIND_JADE_NORMAL:
                 continue
             if account.jade_complete_time <= refresh_point:
