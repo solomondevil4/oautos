@@ -81,8 +81,82 @@ class ScriptTask(
         results = self.run_switch_account()
         if results:
             self.run_push_result(results)
+        # 收尾切回指定账号: 必须在 run_switch_account()(含失败重试) 之后、set_next_run() 之前,
+        # 这样不管最后一条号切号成功与否, 结束时都停在指定账号上, 后续排队任务也在该号执行。
+        self.switch_back_to_end_account()
         self.set_next_run(task='AssistBattle', success=True, finish=True)
         raise TaskEnd('AssistBattle')
+
+    def switch_back_to_end_account(self) -> bool:
+        """整轮结束后切回指定账号, 成功返回 True。
+
+        读配置一律走 `self.config.model.assist_battle` 现取: 悬赏子流程的 set_next_run
+        会 reload 换掉整个 model, `self.conf` 可能是旧对象(读不到刚改的开关)。
+        切号失败只打 warning, 不改本任务结果, 也不影响 next_run。
+        """
+        model = self.config.model.assist_battle
+        optimize = model.optimize_config
+        if not optimize.end_switch_enable:
+            return False
+        character = (optimize.end_switch_character or '').strip()
+        svr = (optimize.end_switch_svr or '').strip()
+        if not character:
+            logger.warning(
+                'End switch is enabled but end_switch_character is empty, skip switching back'
+            )
+            return False
+        target = self._find_end_switch_account(model.account_list or [], character, svr)
+        if target is None:
+            logger.warning(
+                'End switch target %s-%s not found in assist_battle account list, stay in current account',
+                character,
+                svr or '(any)',
+            )
+            return False
+        logger.hr('Switch back to %s-%s' % (target.character, target.svr), 2)
+        try:
+            switched = SwitchAccount(self.config, self.device, target).switchAccount()
+        except Exception as e:
+            logger.warning(
+                'End switch back to %s-%s raised %s: %s; stay in current account',
+                target.character,
+                target.svr,
+                type(e).__name__,
+                e,
+            )
+            return False
+        if not switched:
+            logger.warning(
+                'End switch back to %s-%s failed, stay in current account',
+                target.character,
+                target.svr,
+            )
+            return False
+        logger.info('End switch back to %s-%s success', target.character, target.svr)
+        return True
+
+    @staticmethod
+    def _find_end_switch_account(accounts, character: str, svr: str):
+        """在账号列表里按「角色名 + 服务器」找完整账号信息, 找不到返回 None。
+
+        svr 为空时只比对角色名, 命中第一个即返回; 填了 svr 就要求两者都相同。
+        不复用 is_valid(): 收尾要切的号可能今天不跑协战(比如主号), 只要列表里有就行。
+        """
+        fuzzy = None
+        for account in accounts:
+            if account.character != character:
+                continue
+            if not svr:
+                if fuzzy is None:
+                    fuzzy = account
+                continue
+            if account.svr == svr:
+                return account
+        if fuzzy is not None:
+            logger.info(
+                'End switch matched %s by character only (svr not configured)', character
+            )
+        return fuzzy
 
     def evozone_enabled(self, account=None) -> bool:
         """本号是否要打觉醒: 全局总开关 AND 该号自己的勾选

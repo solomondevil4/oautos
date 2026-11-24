@@ -235,6 +235,23 @@ class AssistBattleOptimizeConfig(BaseModel):
         default=True,
         description='切号失败的账号会最后再尝试一次',
     )
+    end_switch_enable: bool = Field(
+        default=False,
+        title='结束后切回指定账号',
+        description='一键协战整轮跑完（含「切号失败后重试」）后，最后切回下面指定的账号，'
+        '让调度器紧接着排队的任务都在这个号上执行。开关关闭时行为与原来完全一致。',
+    )
+    end_switch_character: str = Field(
+        default='',
+        title='收尾切回的角色名',
+        description='要切回的角色名，需能在上面的协战账号列表里找到（按「角色名 + 服务器」匹配，'
+        '自动复用该条目的邮箱与安卓/苹果信息）。留空则跳过收尾切号并打日志。',
+    )
+    end_switch_svr: str = Field(
+        default='',
+        title='收尾切回角色所在服务器',
+        description='同名角色出现在多个服务器时用来区分。留空则只按角色名匹配，命中第一个就切。',
+    )
 
 
 class AssistBattle(ConfigBase):
