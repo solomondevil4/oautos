@@ -70,6 +70,11 @@ WHITELIST: set[tuple[str, str]] = {
     ("tasks/MetaDemon/assets.py", "A01"),
     ("tasks/MysteryShop/assets.py", "A01"),
     ("tasks/WantedQuests/assets.py", "A01"),
+    # 上游 b5b70f0a 把道馆主循环抽到 tasks/Component/DokanCore/task_base.py，
+    # 这两个任务的 ScriptTask 都继承 DokanTaskBase，run() 在跨文件基类里。
+    # find_inherited_run() 只追同文件内定义的基类，所以 T04 是误报，不改规则。
+    ("tasks/Dokan", "T04"),
+    ("tasks/ZombieGuild", "T04"),
 }
 
 # 判断 except 捕获的是不是框架自定义异常：是的话说明循环靠异常退出
