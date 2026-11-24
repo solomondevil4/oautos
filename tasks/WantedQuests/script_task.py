@@ -41,6 +41,8 @@ class ScriptTask(WQExplore, SecretScriptTask, WantedQuestsAssets):
     secret_youkai_skip_count: int = 0
 
     def run(self):
+        self.wq_executed_set = set()  # 每次运行独立, 避免跨账号串味
+        self.secret_youkai_skip_count = 0
         con = self.config.model.wanted_quests
         unwanted_boss_names = con.wanted_quests_config.unwanted_boss_names
         if unwanted_boss_names is not None and unwanted_boss_names != '':
